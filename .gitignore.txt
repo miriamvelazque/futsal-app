@@ -1,0 +1,30 @@
+# Entornos virtuales (por si usás venv o conda)
+.venv/
+venv/
+env/
+ENV/
+
+# Temporales de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Videos y archivos pesados (Etapa de Video)
+*.mp4
+*.avi
+*.mov
+*.mkv
+# Si ponés los videos en una carpeta específica, la podés ignorar entera:
+videos_prueba/
+
+# Archivos del sistema y IDEs
+.DS_Store
+.vscode/
+.idea/
+
+# Base de datos (Opcional)
+# Si querés que la base de datos se guarde con tus pruebas de clics, borrá la línea de abajo.
+# Si preferís que no se suba porque cambia todo el tiempo, dejala.
+# futsal.db
