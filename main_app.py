@@ -5,12 +5,56 @@ import plotly.express as px
 import plotly.graph_objects as go
 import sqlite3
 import json
-from datetime import datetime
+import hashlib  # Para encriptar contraseñas de forma segura
+import time
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
 st.set_page_config(page_title="Planilla Digital de Futsal", page_icon="📊", layout="wide")
+
+
+# =========================================================
+# CAPA DE SEGURIDAD (Autenticación y Roles)
+# =========================================================
+def encriptar_clave(clave):
+    """Encripta la contraseña usando SHA-256."""
+    return hashlib.sha256(clave.encode()).hexdigest()
+
+
+def verificar_usuario(conn, usuario, clave):
+    """Verifica si las credenciales son correctas y devuelve el rol del usuario."""
+    c = conn.cursor()
+    clave_encriptada = encriptar_clave(clave)
+    c.execute("SELECT rol FROM usuarios WHERE usuario = ? AND clave = ?", (usuario, clave_encriptada))
+    resultado = c.fetchone()
+    return resultado[0] if resultado else None
+
+
+def mostrar_login(conn):
+    """Muestra un formulario estético de Login en el centro de la pantalla."""
+    st.markdown("<h2 style='text-align: center;'>🔐 Acceso Planilla Digital</h2>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 1.3, 1])
+    with col2:
+        with st.form("formulario_login"):
+            st.markdown("### Iniciar Sesión")
+            usuario = st.text_input("Usuario")
+            clave = st.text_input("Contraseña", type="password")
+            boton_ingresar = st.form_submit_button("Ingresar", use_container_width=True)
+            
+            if boton_ingresar:
+                if not usuario or not clave:
+                    st.warning("⚠️ Por favor, completá ambos campos.")
+                else:
+                    rol = verificar_usuario(conn, usuario, clave)
+                    if rol:
+                        st.session_state["usuario_logueado"] = usuario
+                        st.session_state["rol_usuario"] = rol
+                        st.success(f"¡Bienvenido {usuario}! Ingresando...")
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos.")
 
 
 # =========================================================
@@ -23,34 +67,73 @@ def get_connection():
 
 
 def init_db(conn):
-    cursor = conn.cursor()
-    # Tabla de eventos (la que ya tenés)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS eventos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha TEXT,
-            rival TEXT,
-            tipo_evento TEXT,
-            tiempo TEXT,
-            equipo TEXT,
-            jugador TEXT,
-            zona TEXT,
-            resultado TEXT,
-            tipo_tarjeta TEXT,
-            x REAL,
-            y REAL
-        );
-    """)
-    # NUEVA TABLA: Ficha de Resultados Oficiales
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS partidos (
-            fecha TEXT,
-            rival TEXT PRIMARY KEY,
-            goles_troncos INTEGER,
-            goles_rival INTEGER,
-            condicion TEXT
-        );
-    """)
+    """Crea las tablas necesarias si no existen, incluyendo la de usuarios."""
+    c = conn.cursor()
+    
+    # Tabla de partidos
+    c.execute("""CREATE TABLE IF NOT EXISTS partidos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha TEXT,
+                    rival TEXT,
+                    finalizaciones TEXT,
+                    recuperos TEXT,
+                    perdidas TEXT,
+                    faltas TEXT,
+                    tarjetas TEXT
+                )""")
+
+    # Tabla de eventos
+    c.execute("""CREATE TABLE IF NOT EXISTS eventos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha TEXT,
+                    rival TEXT,
+                    tipo_evento TEXT,
+                    tiempo TEXT,
+                    equipo TEXT,
+                    jugador TEXT,
+                    zona TEXT,
+                    resultado TEXT,
+                    tipo_tarjeta TEXT,
+                    x REAL,
+                    y REAL
+                )""")
+    
+    # Tabla de usuarios
+    c.execute("""CREATE TABLE IF NOT EXISTS usuarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usuario TEXT UNIQUE,
+                    clave TEXT,
+                    rol TEXT
+                )""")
+    
+    # Asegurar columnas X e Y en eventos
+    c.execute("PRAGMA table_info(eventos)")
+    columnas = [col[1] for col in c.fetchall()]
+    if "x" not in columnas:
+        c.execute("ALTER TABLE eventos ADD COLUMN x REAL")
+    if "y" not in columnas:
+        c.execute("ALTER TABLE eventos ADD COLUMN y REAL")
+        
+    # Insertar usuarios por defecto si la tabla está vacía leyendo desde secrets de Streamlit
+    c.execute("SELECT COUNT(*) FROM usuarios")
+    if c.fetchone()[0] == 0:
+        try:
+            # Intentamos leer claves seguras desde secrets
+            pass_admin = st.secrets["credentials"]["admin_pass"]
+            pass_dt = st.secrets["credentials"]["dt_pass"]
+        except Exception:
+            # Claves de respaldo seguras en caso de no estar configuradas aún
+            pass_admin = "admin123"
+            pass_dt = "troncos2026"
+
+        clave_admin = encriptar_clave(pass_admin)
+        c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)", 
+                  ("admin", clave_admin, "Administrador"))
+        
+        clave_dt = encriptar_clave(pass_dt)
+        c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)", 
+                  ("dt_troncos", clave_dt, "Lector"))
+        
     conn.commit()
 
 
@@ -61,43 +144,14 @@ def cargar_partidos_df(conn):
 
 
 def cargar_eventos_df(conn, limit=None):
-    """Devuelve el DataFrame de eventos, o None si está vacío."""
-    query = "SELECT * FROM eventos ORDER BY id DESC"
-    if limit:
-        query += f" LIMIT {limit}"
-    df = pd.read_sql(query, conn)
+    """Devuelve el DataFrame de eventos de forma segura utilizando parámetros SQL."""
+    if limit is not None:
+        query = "SELECT * FROM eventos ORDER BY id DESC LIMIT ?"
+        df = pd.read_sql(query, conn, params=(limit,))
+    else:
+        query = "SELECT * FROM eventos ORDER BY id DESC"
+        df = pd.read_sql(query, conn)
     return df if not df.empty else None
-
-def obtener_lista_partidos_formateada(conn, jugador_especifico=None):
-    """Trae los partidos combinando la info de eventos y resultados oficiales.
-       Permite filtrar opcionalmente por un jugador para Pestaña 3."""
-    cursor = conn.cursor()
-    try:
-        if jugador_especifico:
-            cursor.execute("SELECT DISTINCT fecha, rival FROM eventos WHERE jugador = ? ORDER BY fecha DESC;", (jugador_especifico,))
-        else:
-            cursor.execute("SELECT DISTINCT fecha, rival FROM eventos ORDER BY fecha DESC;")
-        eventos_partidos = cursor.fetchall()
-        
-        opciones = []
-        mapeo_partidos = {} # Para saber qué rival/fecha real corresponde a cada opción
-        
-        for fecha, rival in eventos_partidos:
-            # Buscamos si ese partido tiene ficha de resultado oficial
-            cursor.execute("SELECT goles_troncos, goles_rival FROM partidos WHERE rival = ? AND fecha = ?;", (rival, fecha))
-            ficha = cursor.fetchone()
-            
-            if ficha:
-                label = f"⚽ {rival} ({fecha}) | Res: {ficha[0]}-{ficha[1]}"
-            else:
-                label = f"🏃‍♂️ {rival} ({fecha}) | (Sin resultado oficial)"
-                
-            opciones.append(label)
-            mapeo_partidos[label] = {"rival": rival, "fecha": fecha}
-            
-        return opciones, mapeo_partidos
-    except Exception as e:
-        return [], {}
 
 
 def insertar_eventos_bulk(conn, df_upload):
@@ -143,32 +197,20 @@ CANCHA_ALTO = 20   # metros real (eje Y)
 
 def dibujar_capas_cancha(fig):
     """Agrega las formas reglamentarias de una cancha de Futsal oficial (40x20m) sin textos internos."""
-    # Color de fondo LIMITADO ESTRICTAMENTE a la cancha (Piso Azul)
     fig.add_shape(type="rect", x0=0, y0=0, x1=40, y1=20, fillcolor="#4158f6", line=dict(color="white", width=2.5), layer="below")
-    
-    # Área Penal Izquierda (Radio 6m desde postes)
     fig.add_shape(type="path", path="M 0,4 Q 6,4 6,10 Q 6,16 0,16 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    
-    # Área Penal Derecha (Radio 6m)
     fig.add_shape(type="path", path="M 40,4 Q 34,4 34,10 Q 34,16 40,16 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    
-    # Círculo Central (Radio 3m, centro en X=20, Y=10)
     fig.add_shape(type="circle", x0=17, y0=7, x1=23, y1=13, fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    
-    # Línea de Mitad de Cancha
     fig.add_shape(type="line", x0=20, y0=0, x1=20, y1=20, line=dict(color="white", width=2.5))
-    
-    # Puntos de Penal (6m) y Doble Penal (10m)
     fig.add_trace(go.Scatter(x=[6, 10, 34, 30], y=[10, 10, 10, 10], mode="markers", marker=dict(color="white", size=5), showlegend=False, hoverinfo="skip"))
-    
     fig.add_shape(type="rect", x0=-1.5, y0=8.5, x1=0, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
     fig.add_shape(type="rect", x0=40, y0=8.5, x1=41.5, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
 
 
 def crear_figura_cancha():
     """Dibuja la cancha interactiva de Futsal limpia para la captura de datos tácticos."""
-    xs = list(range(1, 100, 2))  # Mantiene consistencia con la grilla de captura 0-100
-    ys = list(range(1, 60, 2))   # Mantiene consistencia con la grilla de captura 0-60
+    xs = list(range(1, 100, 2))  
+    ys = list(range(1, 60, 2))   
     grid_x = [x for y in ys for x in xs]
     grid_y = [y for y in ys for x in xs]
 
@@ -184,7 +226,6 @@ def crear_figura_cancha():
         name="cancha_click"
     ))
 
-    # Adaptamos temporalmente la visualización de las capas al tamaño de grilla de captura
     fig.add_shape(type="rect", x0=0, y0=0, x1=100, y1=60, fillcolor="#4158f6", line=dict(color="white", width=2.5), layer="below")
     fig.add_shape(type="path", path="M 0,12 Q 15,12 15,30 Q 15,48 0,48 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
     fig.add_shape(type="path", path="M 100,12 Q 85,12 85,30 Q 85,48 100,48 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
@@ -242,7 +283,7 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
         df_cancha["y"] = pd.to_numeric(df_cancha["y"], errors="coerce")
         df_cancha = df_cancha.dropna(subset=["x", "y"])
 
-        # FIX de Escala: Reescalamos de 100x60 a 40x20 antes del truncado por rango
+        # Reescalamos de 100x60 a 40x20 antes del truncado por rango
         df_cancha = _reescalar_coordenadas(df_cancha, ancho_origen_captura, alto_origen_captura)
         df_cancha = df_cancha[(df_cancha["x"] >= 0) & (df_cancha["x"] <= CANCHA_ANCHO) &
                                (df_cancha["y"] >= 0) & (df_cancha["y"] <= CANCHA_ALTO)]
@@ -303,16 +344,24 @@ def extraer_punto_click(evento_click):
     return getattr(primer_punto, "x", None), getattr(primer_punto, "y", None)
 
 
-def obtener_zona_desde_click(x):
-    # En base a la grilla de clics (0 a 100), la mitad es 50
-    return "Defensiva" if x < 50 else "Ofensiva"
-
-
 # =========================================================
 # PESTAÑA 1: CARGA DE DATOS
 # =========================================================
 def render_carga_datos(conn):
     st.header("📥 Carga de Datos")
+
+    # 🚨 BOTÓN DE EMERGENCIA SEGURO PARA ELIMINAR BASE DE DATOS Y EMPEZAR DE CERO
+    st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
+    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True):
+        import os
+        conn.close() # Cerramos conexión para liberar archivo en Windows
+        if os.path.exists("futsal.db"):
+            os.remove("futsal.db")
+            st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
+            time.sleep(2)
+            st.rerun()
+
+    st.divider()
 
     st.subheader("Cargar eventos desde CSV o Excel")
     uploaded_file = st.file_uploader("Subí tu archivo con los eventos", type=["csv", "xlsx"])
@@ -335,13 +384,98 @@ def render_carga_datos(conn):
 
     st.divider()
 
+    st.subheader("⏱️ Control de Posesión (Reloj Parado)")
+    
+    # --- INICIALIZACIÓN DE VARIABLES EN MEMORIA (SESSION STATE) ---
+    if "pos_nuestra_acumulada" not in st.session_state:
+        st.session_state.pos_nuestra_acumulada = 0.0
+    if "pos_rival_acumulada" not in st.session_state:
+        st.session_state.pos_rival_acumulada = 0.0
+    if "pos_estado_actual" not in st.session_state:
+        st.session_state.pos_estado_actual = "Pausa"
+    if "pos_ultimo_click" not in st.session_state:
+        st.session_state.pos_ultimo_click = None
+
+    # --- LÓGICA DE ACTUALIZACIÓN DE TIEMPOS DE POSESIÓN ---
+    ahora = time.time()
+
+    if st.session_state.pos_estado_actual != "Pausa" and st.session_state.pos_ultimo_click is not None:
+        transcurrido = ahora - st.session_state.pos_ultimo_click
+        if st.session_state.pos_estado_actual == "Nosotros":
+            st.session_state.pos_nuestra_acumulada += transcurrido
+        elif st.session_state.pos_estado_actual == "Rival":
+            st.session_state.pos_rival_acumulada += transcurrido
+        st.session_state.pos_ultimo_click = ahora
+
+    def formatear_tiempo(segundos_totales):
+        minutos = int(segundos_totales) // 60
+        segundos = int(segundos_totales) % 60
+        return f"{minutos:02d}:{segundos:02d}"
+
+    # --- DISEÑO DEL CONTROLLER DE POSESIÓN ---
+    c_pos1, c_pos2, c_pos3, c_pos4 = st.columns([1.2, 1.2, 1.2, 1])
+
+    with c_pos1:
+        tipo_boton_nos = "primary" if st.session_state.pos_estado_actual == "Nosotros" else "secondary"
+        if st.button("🟢 NUESTRA POSESIÓN", use_container_width=True, type=tipo_boton_nos):
+            st.session_state.pos_estado_actual = "Nosotros"
+            st.session_state.pos_ultimo_click = time.time()
+            st.rerun()
+
+    with c_pos2:
+        tipo_boton_rival = "primary" if st.session_state.pos_estado_actual == "Rival" else "secondary"
+        if st.button("🔴 POSESIÓN RIVAL", use_container_width=True, type=tipo_boton_rival):
+            st.session_state.pos_estado_actual = "Rival"
+            st.session_state.pos_ultimo_click = time.time()
+            st.rerun()
+
+    with c_pos3:
+        tipo_boton_pausa = "primary" if st.session_state.pos_estado_actual == "Pausa" else "secondary"
+        if st.button("⏸️ PAUSAR RELOJ", use_container_width=True, type=tipo_boton_pausa):
+            st.session_state.pos_estado_actual = "Pausa"
+            st.session_state.pos_ultimo_click = None
+            st.rerun()
+
+    with c_pos4:
+        if st.button("🔄 RESET", use_container_width=True, help="Reiniciar cronómetros a cero"):
+            st.session_state.pos_nuestra_acumulada = 0.0
+            st.session_state.pos_rival_acumulada = 0.0
+            st.session_state.pos_estado_actual = "Pausa"
+            st.session_state.pos_ultimo_click = None
+            st.rerun()
+
+    # Marcadores rápidos debajo de los botones de posesión
+    total_tiempo_neto = st.session_state.pos_nuestra_acumulada + st.session_state.pos_rival_acumulada
+    pct_nuestro = (st.session_state.pos_nuestra_acumulada / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+    pct_rival = (st.session_state.pos_rival_acumulada / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+
+    col_res1, col_res2, col_res3 = st.columns(3)
+    with col_res1:
+        st.metric("⏱️ Nuestra Posesión", formatear_tiempo(st.session_state.pos_nuestra_acumulada), f"{pct_nuestro:.1f}%")
+    with col_res2:
+        estado_icon = "🟢" if st.session_state.pos_estado_actual == "Nosotros" else "🔴" if st.session_state.pos_estado_actual == "Rival" else "⏸️"
+        st.metric("Estado Reloj", f"{estado_icon} {st.session_state.pos_estado_actual.upper()}")
+    with col_res3:
+        st.metric("⏱️ Posesión Rival", formatear_tiempo(st.session_state.pos_rival_acumulada), f"{pct_rival:.1f}%", delta_color="inverse")
+
+    st.divider()
+
     st.subheader("⚡ Carga rápida de eventos (clic en la cancha)")
 
-    col_ctx1, col_ctx2 = st.columns(2)
+    col_ctx1, col_ctx2, col_ctx3 = st.columns([1, 1, 1.2])
     with col_ctx1:
         fecha = st.date_input("Fecha del partido", key="fecha_partido")
     with col_ctx2:
         rival = st.text_input("Equipo rival", key="rival_partido")
+    with col_ctx3:
+        lado_inicio = st.selectbox(
+            "En el 1T atacamos hacia:", 
+            [
+                "Derecha ➡️ (Arco Rival a la Derecha)", 
+                "Izquierda ⬅️ (Arco Rival a la Izquierda)"
+            ],
+            key="lado_inicio_1t"
+        )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -355,11 +489,12 @@ def render_carga_datos(conn):
 
     resultado, tipo_tarjeta = "", ""
     if tipo_evento == "Finalizaciones":
-        resultado = st.selectbox("Resultado", ["Gol", "Al arco (Atajado / Palo)", "Desviado (Afuera)", "Bloqueado (En defensor)"], key="resultado_rapido")
+        # ⭐ OPCIONES SÚPER ACTUALIZADAS PARA TU SISTEMA
+        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
     elif tipo_evento == "Tarjetas":
         tipo_tarjeta = st.selectbox("Tipo de tarjeta", ["Amarilla", "Roja"], key="tipo_tarjeta_rapido")
 
-    st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en el sector azul o naranja de la cancha para registrar el evento.")
+    st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en la cancha táctica. El sistema procesará automáticamente el lado de ataque actual según tu configuración de sorteo.")
     
     fig_cancha = crear_figura_cancha()
 
@@ -376,15 +511,29 @@ def render_carga_datos(conn):
         if not jugador:
             st.warning("⚠️ Ingresá el número de jugador antes de hacer clic en la cancha")
         elif st.session_state.get("ultimo_click_registrado") != click_id:
-            zona = obtener_zona_desde_click(x_click)
+            
+            # --- LÓGICA INTELIGENTE DE DETERMINACIÓN DE LADOS ---
+            es_1t_y_ataca_izquierda = (tiempo == "1T" and "Izquierda" in lado_inicio)
+            es_2t_y_ataca_izquierda = (tiempo == "2T" and "Derecha" in lado_inicio)
 
+            if es_1t_y_ataca_izquierda or es_2t_y_ataca_izquierda:
+                zona = "Ofensiva" if x_click < 50 else "Defensiva"
+                x_guardar = 100 - x_click
+                y_guardar = 60 - y_click
+            else:
+                zona = "Defensiva" if x_click < 50 else "Ofensiva"
+                x_guardar = x_click
+                y_guardar = y_click
+
+            # Guardamos los datos normalizados en la DB
             insertar_evento_individual(
                 conn, fecha, rival, tipo_evento, tiempo, equipo,
-                jugador, zona, resultado, tipo_tarjeta, x=x_click, y=y_click
+                jugador, zona, resultado, tipo_tarjeta, x=x_guardar, y=y_guardar
             )
 
             st.session_state["ultimo_click_registrado"] = click_id
-            st.success(f"✅ ¡Registrado con éxito! {tipo_evento} - Jugador {jugador} en zona {zona} (X: {x_click}, Y: {y_click})")
+            st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}. Guardado de manera normalizada.")
+            st.rerun()
     else:
         st.caption("📍 Esperando clic posicional...")
 
@@ -397,139 +546,38 @@ def render_carga_datos(conn):
     else:
         st.info("No hay eventos cargados aún")
 
-    # --- SECCIÓN: REGISTRO DE RESULTADO FINAL ---
-    st.markdown("---")
-    st.subheader("📝 Ficha de Resultado Final")
-    st.caption("Guardá el score oficial del partido para el historial del torneo.")
-
-    # Detectamos de forma dinámica el rival que estás escribiendo arriba en la carga rápida
-    rival_actual = st.session_state.get("rival_partido", "").strip()
-    fecha_actual = st.session_state.get("fecha_partido", datetime.now().date())
-
-    if rival_actual:
-        # --- TABLERO ELECTRÓNICO DINÁMICO (Cálculo interactivo en base a los clics) ---
-        df_todos_eventos = cargar_eventos_df(conn)
-        goles_calculados_troncos = 0
-        
-        # Filtramos de forma temporal los eventos de este partido para contar los goles marcados por Los Troncos
-        if df_todos_eventos is not None:
-            df_este_partido = df_todos_eventos[(df_todos_eventos["rival"] == rival_actual) & (df_todos_eventos["fecha"] == str(fecha_actual))]
-            if not df_este_partido.empty:
-                # Contamos cuántos eventos de "Finalizaciones" dieron como resultado exacto "Gol"
-                goles_calculados_troncos = len(df_este_partido[(df_este_partido["tipo_evento"] == "Finalizaciones") & (df_este_partido["resultado"] == "Gol")])
-
-        col_res1, col_res2, col_res3 = st.columns(3)
-        with col_res1:
-            # Ponemos el valor calculado de forma automática pero dejamos modificar por si acaso
-            goles_troncos = st.number_input("Goles de Los Troncos", min_value=0, step=1, value=goles_calculados_troncos, key="f_goles_troncos")
-        with col_res2:
-            goles_rival = st.number_input(f"Goles de {rival_actual}", min_value=0, step=1, value=0, key="f_goles_rival")
-        with col_res3:
-            condicion_partido = st.selectbox("Condición de Los Troncos", ["Local", "Visitante"], key="f_condicion_partido")
-
-        # --- TARJETA DE RESULTADO DESTACADA ---
-        st.markdown("#### 🏆 VISTA PREVIA DEL MARCADOR")
-        if goles_troncos > goles_rival:
-            estado_texto = f"🎉 ¡VICTORIA TEMPORAL CONTRA {rival_actual.upper()}!"
-            contenedor_resultado = st.success
-        elif goles_troncos < goles_rival:
-            estado_texto = f"❌ DERROTA TEMPORAL CONTRA {rival_actual.upper()}"
-            contenedor_resultado = st.error
-        else:
-            estado_texto = f"🤝 EMPATE TEMPORAL CONTRA {rival_actual.upper()}"
-            contenedor_resultado = st.info
-
-        with contenedor_resultado(estado_texto):
-            col_local, col_vs, col_visitante = st.columns([2, 1, 2])
-            with col_local:
-                st.metric(label="Los Troncos FC", value=f"⚽ {goles_troncos}")
-                st.caption(f"Condición: {condicion_partido}")
-            with col_vs:
-                st.markdown("<h2 style='text-align: center; margin-top: 15px;'>VS</h2>", unsafe_allow_html=True)
-            with col_visitante:
-                st.metric(label=f"{rival_actual}", value=f"⚽ {goles_rival}")
-                st.caption("Rival")
-
-        if st.button("💾 Guardar Resultado Oficial", key="btn_guardar_resultado"):
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO partidos (fecha, rival, goles_troncos, goles_rival, condicion)
-                    VALUES (?, ?, ?, ?, ?);
-                """, (str(fecha_actual), rival_actual, goles_troncos, goles_rival, condicion_partido))
-                conn.commit()
-                st.success(f"⚽ ¡Resultado oficial guardado con éxito en el historial!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al guardar el resultado en la base de datos: {e}")
-    else:
-        st.info("💡 Escribí el nombre del 'Equipo rival' en la sección de carga rápida arriba para habilitar la ficha de resultado final.")
-
-    # --- SECCIÓN DE GESTIÓN DE PARTIDOS ---
-    st.markdown("---")
-    st.subheader("⚽ GESTIÓN DEL PARTIDO ACTIVO")
-    st.caption("Usá estas opciones para controlar el cierre de datos de cada tiempo o partido.")
-    
-    col_g1, col_g2 = st.columns(2)
-    
-    with col_g1:
-        def finalizar_y_limpiar():
-            if "rival_partido" in st.session_state:
-                del st.session_state["rival_partido"]
-            if "jugador_rapido" in st.session_state:
-                del st.session_state["jugador_rapido"]
-            st.toast("📝 Campos de carga reiniciados para el próximo partido/tiempo.", icon="🔄")
-
-        st.button("🏁 Finalizar Tiempo / Partido Actual", key="btn_clear_inputs", on_click=finalizar_y_limpiar)
-
-    with col_g2:
-        rivales_guardados = ["Seleccionar..."] + list(df_eventos_recientes["rival"].unique()) if df_eventos_recientes is not None else []
-        partido_a_borrar = st.selectbox("🗑️ ¿Borrar un partido específico por error de carga?", rivales_guardados, key="sb_borrar_partido")
-        
-        if partido_a_borrar != "Seleccionar...":
-            if st.button(f"Confirmar eliminación de: {partido_a_borrar}", key="btn_borrar_especifico"):
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM eventos WHERE rival = ?;", (partido_a_borrar,))
-                cursor.execute("DELETE FROM partidos WHERE rival = ?;", (partido_a_borrar,))
-                conn.commit()
-                st.warning(f"Se eliminaron los eventos y fichas contra {partido_a_borrar} por corrección de errores.")
-                st.rerun()
 
 # =========================================================
 # PESTAÑA 2: DASHBOARD GENERAL
 # =========================================================
 def render_dashboard_general(conn):
-    st.header("📈 Dashboard Analítico Advanced")
+    st.header("📈 Dashboard Analítico Avanzado")
 
     df_eventos = cargar_eventos_df(conn)
     if df_eventos is None:
         st.info("No hay eventos cargados aún. Registrá datos en la primera pestaña.")
         return
 
+    # --- Creamos columna combinada de Fecha - Rival para el selector ---
+    df_eventos["partido"] = df_eventos["fecha"].astype(str) + " - " + df_eventos["rival"].astype(str)
+
     # --- BARRA DE FILTROS SUPERIOR ---
     st.markdown("### 🔍 Filtros Globales")
     c1, c2, c3 = st.columns(3)
-    
     with c1:
-        opciones_partidos, mapeo_partidos = obtener_lista_partidos_formateada(conn)
-        if opciones_partidos:
-            partido_seleccionado = st.selectbox("Seleccionar Partido:", opciones_partidos, key="dash_gen_partido")
-            rival_filtro = mapeo_partidos[partido_seleccionado]["rival"]
-            fecha_filtro = mapeo_partidos[partido_seleccionado]["fecha"]
-        else:
-            st.info("No hay partidos registrados.")
-            return
-            
-    df_partido_base = df_eventos[(df_eventos["rival"] == rival_filtro) & (df_eventos["fecha"] == fecha_filtro)]
-
+        partidos_disponibles = ["Todos"] + sorted(list(df_eventos["partido"].dropna().unique()), reverse=True)
+        partido_sel = st.selectbox("Filtrar por Partido (Fecha - Rival)", partidos_disponibles)
     with c2:
-        jugadores_disponibles = ["Todos"] + sorted(list(df_partido_base["jugador"].dropna().unique()))
+        jugadores_disponibles = ["Todos"] + sorted(list(df_eventos["jugador"].dropna().unique()))
         jugador_sel = st.selectbox("Filtrar por Jugador", jugadores_disponibles)
     with c3:
-        tipos_disponibles = ["Todos"] + list(df_partido_base["tipo_evento"].dropna().unique())
+        tipos_disponibles = ["Todos"] + list(df_eventos["tipo_evento"].dropna().unique())
         tipo_sel = st.selectbox("Filtrar por Tipo de Acción", tipos_disponibles)
 
-    df_filtrado = df_partido_base.copy()
+    # Filtros cruzados
+    df_filtrado = df_eventos.copy()
+    if partido_sel != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["partido"] == partido_sel]
     if jugador_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["jugador"] == jugador_sel]
     if tipo_sel != "Todos":
@@ -541,14 +589,15 @@ def render_dashboard_general(conn):
     with col1:
         st.metric("Acciones Filtradas", len(df_filtrado))
     with col2:
-        goles_tiros = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Al arco", "Al arco (Atajado / Palo)"]))])
-        st.metric("Goles / Tiros al Arco", goles_tiros)
+        # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
+        tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado"]))])
+        st.metric("Goles/Tiros al Arco", tiros_efectivos)
     with col3:
         st.metric("Balones Perdidos", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
     with col4:
         st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
 
-    # --- DISEÑO TÁCTICO INTERACTIVO ---
+    # --- DISEÑO TÁCTICO INTERACTIVO (Fila Superior) ---
     st.divider()
     col_izq, col_der = st.columns([1.3, 1])
 
@@ -573,6 +622,62 @@ def render_dashboard_general(conn):
         else:
             st.info("Sin datos para generar gráficos.")
 
+    # --- NUEVA SECCIÓN: DESGLOSE DE FINALIZACIONES Y TABLA DE GOLEADORES (Fila Inferior) ---
+    if not df_filtrado.empty:
+        df_finalizaciones = df_filtrado[df_filtrado["tipo_evento"] == "Finalizaciones"]
+        
+        if not df_finalizaciones.empty:
+            st.divider()
+            st.markdown("### 🎯 Análisis de Efectividad en Finalizaciones")
+            
+            col_tabla_f, col_grafico_f, col_goleadores = st.columns([1.1, 1.0, 1.1])
+            
+            with col_tabla_f:
+                st.markdown("#### 📋 Detalle de Tiros")
+                res_counts = df_finalizaciones["resultado"].fillna("Sin especificar").value_counts().reset_index()
+                res_counts.columns = ["Resultado", "Cantidad"]
+                
+                total_fin = res_counts["Cantidad"].sum()
+                res_counts["Porcentaje"] = ((res_counts["Cantidad"] / total_fin) * 100).round(1).astype(str) + "%"
+                
+                st.dataframe(res_counts, use_container_width=True, hide_index=True)
+                
+            with col_grafico_f:
+                fig_torta = px.pie(
+                    res_counts, values="Cantidad", names="Resultado",
+                    color="Resultado",
+                    color_discrete_sequence=px.colors.qualitative.Safe,
+                    hole=0.4
+                )
+                fig_torta.update_layout(
+                    height=240, 
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_torta, use_container_width=True)
+
+            with col_goleadores:
+                st.markdown("#### ⚽ Tabla de Goleadores")
+                
+                # ⭐ CORRECCIÓN: Filtramos exclusivamente los resultados anotados como "Gol"
+                df_goles = df_finalizaciones[df_finalizaciones["resultado"].str.lower().str.contains("gol", na=False)]
+                
+                if not df_goles.empty:
+                    goleadores = df_goles["jugador"].value_counts().reset_index()
+                    goleadores.columns = ["Jugador", "Goles"]
+                    
+                    st.dataframe(
+                        goleadores, 
+                        column_config={
+                            "Jugador": st.column_config.TextColumn("Camiseta / Jugador", help="Número de camiseta registrado"),
+                            "Goles": st.column_config.NumberColumn("Goles", format="%d ⚽")
+                        },
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+                else:
+                    st.info("No se registraron goles en los partidos seleccionados.")
+
 
 # =========================================================
 # PESTAÑA 3: RENDIMIENTO INDIVIDUAL
@@ -585,6 +690,10 @@ def render_rendimiento_individual(conn):
         st.info("No hay eventos cargados aún. Registrá datos en la primera pestaña para analizar jugadores.")
         return
 
+    # Creamos columna combinada de Fecha - Rival para el filtrado individual
+    df_eventos["partido"] = df_eventos["fecha"].astype(str) + " - " + df_eventos["rival"].astype(str)
+
+    # --- PANEL DE FILTROS INDIVIDUALES ---
     st.markdown("### 🔍 Filtros de Jugador")
     col_f1, col_f2, col_f3 = st.columns(3)
     
@@ -592,41 +701,35 @@ def render_rendimiento_individual(conn):
         jugadores_disponibles = sorted(df_eventos["jugador"].dropna().unique())
         jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
     
+    df_base_jugador = df_eventos[df_eventos["jugador"] == jugador_sel]
+    
     with col_f2:
-        opciones_partidos_j, mapeo_partidos_j = obtener_lista_partidos_formateada(conn, jugador_especifico=jugador_sel)
-        
-        if opciones_partidos_j:
-            partido_seleccionado_j = st.selectbox("Seleccionar Partido:", opciones_partidos_j, key="rend_partido_sel")
-            rival_filtro = mapeo_partidos_j[partido_seleccionado_j]["rival"]
-            fecha_filtro = mapeo_partidos_j[partido_seleccionado_j]["fecha"]
-        else:
-            st.info("Este jugador no tiene partidos registrados.")
-            return
-
-    df_jugador_part = df_eventos[
-        (df_eventos["jugador"] == jugador_sel) & 
-        (df_eventos["rival"] == rival_filtro) & 
-        (df_eventos["fecha"] == fecha_filtro)
-    ]
+        partidos_disponibles = ["Todos"] + sorted(list(df_base_jugador["partido"].dropna().unique()), reverse=True)
+        partido_sel = st.selectbox("Filtrar por Partido / Rival", partidos_disponibles, key="rend_rival_sel")
     
     with col_f3:
-        tiempos_disponibles = ["Todos"] + list(df_jugador_part["tiempo"].dropna().unique())
+        tiempos_disponibles = ["Todos"] + list(df_base_jugador["tiempo"].dropna().unique())
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles, key="rend_tiempo_sel")
 
-    df_jugador_filtrado = df_jugador_part.copy()
+    df_jugador_filtrado = df_base_jugador.copy()
+    if partido_sel != "Todos":
+        df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["partido"] == partido_sel]
     if tiempo_sel != "Todos":
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tiempo"] == tiempo_sel]
 
     st.divider()
 
+    # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel}")
     m1, m2, m3, m4 = st.columns(4)
     
     with m1:
-        st.metric("Total Acciones", len(df_jugador_filtrado))
+        total_acciones = len(df_jugador_filtrado)
+        st.metric("Total Acciones", total_acciones)
     with m2:
-        goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Al arco", "Al arco (Atajado / Palo)"]))])
-        st.metric("Tiros al Arco / Goles", goles_tiros)
+        # ⭐ CORRECCIÓN: Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
+        goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado"]))])
+        st.metric("Tiros al Arco", goles_tiros)
     with m3:
         recuperos = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"])
         st.metric("Recuperaciones", recuperos)
@@ -636,12 +739,12 @@ def render_rendimiento_individual(conn):
 
     st.divider()
 
+    # --- DISPOSICIÓN VISUAL (MAPA + TABLA DETALLADA) ---
     col_mapa, col_tabla = st.columns([1.2, 1])
 
     with col_mapa:
         st.subheader("📍 Mapa de Calor Propio")
         txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel}"
-        
         fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_filtrado, titulo_mapa=txt_mapa_indiv)
         st.plotly_chart(fig_heatmap_indiv, use_container_width=True, key="heatmap_individual_chart")
 
@@ -654,24 +757,91 @@ def render_rendimiento_individual(conn):
         else:
             st.info("Sin registros para los filtros seleccionados.")
 
+    # --- NUEVA SECCIÓN: DESGLOSE DE FINALIZACIONES DEL JUGADOR (Fila Inferior) ---
+    if not df_jugador_filtrado.empty:
+        df_fin_jugador = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Finalizaciones"]
+        
+        if not df_fin_jugador.empty:
+            st.divider()
+            st.markdown(f"### 🎯 Efectividad de Remates - Jugador {jugador_sel}")
+            col_t_ind, col_g_ind = st.columns([1, 1.2])
+            
+            with col_t_ind:
+                st.markdown("#### 📋 Desglose de sus tiros")
+                res_counts_j = df_fin_jugador["resultado"].fillna("Sin especificar").value_counts().reset_index()
+                res_counts_j.columns = ["Resultado", "Cantidad"]
+                total_fin_j = res_counts_j["Cantidad"].sum()
+                res_counts_j["Porcentaje"] = ((res_counts_j["Cantidad"] / total_fin_j) * 100).round(1).astype(str) + "%"
+                
+                st.dataframe(res_counts_j, use_container_width=True, hide_index=True)
+                
+            with col_g_ind:
+                fig_torta_j = px.pie(
+                    res_counts_j, values="Cantidad", names="Resultado",
+                    color="Resultado",
+                    color_discrete_sequence=px.colors.qualitative.Bold,
+                    hole=0.4
+                )
+                fig_torta_j.update_layout(
+                    height=240, 
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                st.plotly_chart(fig_torta_j, use_container_width=True, key="torta_individual_finalizaciones")
+
 
 # =========================================================
-# MAIN
+# FUNCIÓN PRINCIPAL (MAIN con Gestión de Sesión)
 # =========================================================
 def main():
-    st.title("📊 Planilla Digital de Futsal")
-
     conn = get_connection()
     init_db(conn)
 
-    tab1, tab2, tab3 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual"])
+    # ⭐ CORRECCIÓN SEGURIDAD: Inicializar estado antes del chequeo para evitar renderizado huérfano
+    if "usuario_logueado" not in st.session_state:
+        st.session_state["usuario_logueado"] = None
+    if "rol_usuario" not in st.session_state:
+        st.session_state["rol_usuario"] = None
 
-    with tab1:
-        render_carga_datos(conn)
-    with tab2:
-        render_dashboard_general(conn)
-    with tab3:
-        render_rendimiento_individual(conn)
+    # 1. Verificar si hay sesión activa. Si no, renderizar el Login
+    if st.session_state["usuario_logueado"] is None:
+        mostrar_login(conn)
+        return  # Detiene la ejecución para usuarios no autenticados
+
+    # 2. Sidebar con información de sesión y botón de salir
+    st.sidebar.markdown(f"### 👤 Usuario: **{st.session_state['usuario_logueado']}**")
+    st.sidebar.markdown(f"🔑 Rol: `{st.session_state['rol_usuario']}`")
+    
+    st.sidebar.divider()
+    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
+        st.session_state["usuario_logueado"] = None
+        st.session_state["rol_usuario"] = None
+        st.rerun()
+
+    # 3. Control de acceso a pestañas por ROLES
+    rol_actual = st.session_state["rol_usuario"]
+
+    if rol_actual == "Administrador":
+        # Acceso total a todas las funciones
+        st.title("📊 Planilla Digital de Futsal - Panel Admin")
+        tab1, tab2, tab3 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual"])
+        
+        with tab1:
+            render_carga_datos(conn)
+        with tab2:
+            render_dashboard_general(conn)
+        with tab3:
+            render_rendimiento_individual(conn)
+            
+    elif rol_actual == "Lector":
+        # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
+        st.title("📊 Planilla Digital de Futsal")
+        tab2, tab3 = st.tabs(["Dashboard General", "Rendimiento Individual"])
+        
+        with tab2:
+            render_dashboard_general(conn)
+        with tab3:
+            render_rendimiento_individual(conn)
 
 
 if __name__ == "__main__":
