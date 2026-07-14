@@ -35,3 +35,13 @@ futsal.db-journal
 # Configuración y contraseñas secretas de Streamlit
 .streamlit/secrets.toml
 .streamlit/config.toml
+futsal.db
+.streamlit/secrets.toml
+venv
+__pycache__/
+backup/
+yolov8n.pt
+
+
+*.pyc
+obsoletos/
