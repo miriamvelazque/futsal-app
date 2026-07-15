@@ -485,7 +485,7 @@ def render_carga_datos(conn):
     with col3:
         tiempo = st.selectbox("Tiempo", ["1T", "2T"], key="tiempo_rapido")
     with col4:
-        equipo = st.selectbox("Equipo", ["Local", "Visitante"], key="equipo_rapido")
+        equipo = st.selectbox("Equipo", ["Propio", "Rival"], key="equipo_rapido")
 
     resultado, tipo_tarjeta = "", ""
     if tipo_evento == "Finalizaciones":
