@@ -17,7 +17,6 @@ __pycache__/
 *.mov
 *.mkv
 videos_prueba/
-yolov8n.pt
 
 # Archivos del sistema y IDEs
 .DS_Store
@@ -25,8 +24,9 @@ yolov8n.pt
 .idea/
 
 # Base de datos
-futsal.db
-futsal.db-journal
+# (Descomentada para que se suba a GitHub y Streamlit pueda usar los datos antiguos)
+# futsal.db
+# futsal.db-journal
 
 # Configuración y secretos de Streamlit
 .streamlit/secrets.toml
@@ -41,4 +41,4 @@ diagnostico.py
 generar_*.py
 importar_historico.py
 *.csv
-*.xlsx
+# Nota: Quitamos *.xlsx de aquí para que puedas subir tu base de datos antigua
