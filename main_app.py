@@ -7,6 +7,7 @@ import sqlite3
 import json
 import hashlib  # Para encriptar contraseñas de forma segura
 import time
+import streamlit.components.v1 as components
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -106,13 +107,31 @@ def init_db(conn):
                     rol TEXT
                 )""")
     
+    # --- MANTENIMIENTO DE COLUMNAS (ALTER TABLE) ---
+    
     # Asegurar columnas X e Y en eventos
     c.execute("PRAGMA table_info(eventos)")
-    columnas = [col[1] for col in c.fetchall()]
-    if "x" not in columnas:
+    columnas_eventos = [col[1] for col in c.fetchall()]
+    if "x" not in columnas_eventos:
         c.execute("ALTER TABLE eventos ADD COLUMN x REAL")
-    if "y" not in columnas:
+    if "y" not in columnas_eventos:
         c.execute("ALTER TABLE eventos ADD COLUMN y REAL")
+
+    # Asegurar columnas nuevas en tabla partidos
+    c.execute("PRAGMA table_info(partidos)")
+    columnas_partidos = [col[1] for col in c.fetchall()]
+    nuevas_columnas_partidos = {
+        "equipo_propio": "TEXT",
+        "lugar": "TEXT",
+        "lado_inicio_1t": "TEXT",
+        "posesion_1t_propio_seg": "REAL",
+        "posesion_1t_rival_seg": "REAL",
+        "posesion_2t_propio_seg": "REAL",
+        "posesion_2t_rival_seg": "REAL",
+    }
+    for col_nombre, col_tipo in nuevas_columnas_partidos.items():
+        if col_nombre not in columnas_partidos:
+            c.execute(f"ALTER TABLE partidos ADD COLUMN {col_nombre} {col_tipo}")
         
     # Insertar usuarios por defecto si la tabla está vacía leyendo desde secrets de Streamlit
     c.execute("SELECT COUNT(*) FROM usuarios")
@@ -187,6 +206,75 @@ def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo, 
               (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, x, y))
     conn.commit()
 
+def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inicio_1t,
+                              pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival):
+    """Inserta o actualiza (upsert) el registro de partido con los datos de posesión por tiempo."""
+    c = conn.cursor()
+    c.execute("SELECT id FROM partidos WHERE fecha = ? AND rival = ?", (str(fecha), rival))
+    existente = c.fetchone()
+    if existente:
+        c.execute("""UPDATE partidos SET equipo_propio=?, lugar=?, lado_inicio_1t=?,
+                     posesion_1t_propio_seg=?, posesion_1t_rival_seg=?,
+                     posesion_2t_propio_seg=?, posesion_2t_rival_seg=?
+                     WHERE id=?""",
+                  (equipo_propio, lugar, lado_inicio_1t, pos_1t_propio, pos_1t_rival,
+                   pos_2t_propio, pos_2t_rival, existente[0]))
+    else:
+        c.execute("""INSERT INTO partidos (fecha, rival, equipo_propio, lugar, lado_inicio_1t,
+                     posesion_1t_propio_seg, posesion_1t_rival_seg,
+                     posesion_2t_propio_seg, posesion_2t_rival_seg)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (str(fecha), rival, equipo_propio, lugar, lado_inicio_1t,
+                   pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival))
+    conn.commit()
+
+
+def resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_seleccionado):
+    """Si el jugador ya tiene una amarilla cargada en este partido y se carga otra amarilla,
+    la convierte automáticamente en 'Roja (2da Amarilla)', distinta de una roja directa."""
+    if tipo_tarjeta_seleccionado != "Amarilla":
+        return tipo_tarjeta_seleccionado
+    c = conn.cursor()
+    c.execute("""SELECT COUNT(*) FROM eventos
+                 WHERE fecha=? AND rival=? AND equipo=? AND jugador=? AND tipo_tarjeta='Amarilla'""",
+              (str(fecha), rival, equipo, jugador))
+    amarillas_previas = c.fetchone()[0]
+    if amarillas_previas >= 1:
+        return "Roja (2da Amarilla)"
+    return "Amarilla"
+
+
+def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual):
+    """Reloj visual que sigue sumando en el navegador entre reruns (solo visual;
+    la fuente de verdad del cálculo real sigue siendo session_state en el servidor)."""
+    incrementa_nuestra = 1 if estado_actual == "Nosotros" else 0
+    incrementa_rival = 1 if estado_actual == "Rival" else 0
+    html = f"""
+    <div style="display:flex; gap:24px; justify-content:center; font-family:monospace; font-size:28px; color:white; padding:8px;">
+        <div>🟢 <span id="reloj_nuestra">00:00</span></div>
+        <div>🔴 <span id="reloj_rival">00:00</span></div>
+    </div>
+    <script>
+    let segNuestra = {segundos_nuestra};
+    let segRival = {segundos_rival};
+    const incNuestra = {incrementa_nuestra};
+    const incRival = {incrementa_rival};
+    function formatear(s) {{
+        const m = Math.floor(s / 60).toString().padStart(2, '0');
+        const ss = Math.floor(s % 60).toString().padStart(2, '0');
+        return m + ":" + ss;
+    }}
+    document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
+    document.getElementById("reloj_rival").innerText = formatear(segRival);
+    setInterval(() => {{
+        segNuestra += incNuestra;
+        segRival += incRival;
+        document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
+        document.getElementById("reloj_rival").innerText = formatear(segRival);
+    }}, 1000);
+    </script>
+    """
+    components.html(html, height=70)
 
 # =========================================================
 # COMPONENTES GRÁFICOS Y TRAZADO TÁCTICO FIEL A LA REFERENCIA
@@ -239,7 +327,7 @@ def crear_figura_cancha():
 
     fig.update_layout(
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        height=380, margin=dict(l=10, r=10, t=10, b=10),
+        height=620, margin=dict(l=10, r=10, t=10, b=10),
         modebar=dict(remove=["zoom", "pan", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"])
     )
     return fig
@@ -292,19 +380,19 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
             matriz, x_centros, y_centros = _matriz_densidad(df_cancha["x"].values, df_cancha["y"].values)
             max_val = np.max(matriz) if np.max(matriz) > 0 else 1
 
-            # Capa del mapa de calor continuo
+            # Puntos más chicos y sin borde, para no tapar el degradé de calor
             fig.add_trace(go.Heatmap(
                 x=x_centros, y=y_centros, z=matriz,
-                colorscale="YlOrRd", opacity=0.75, showscale=True,
+                colorscale="YlOrRd", opacity=0.90, showscale=True,
                 zsmooth="best", hoverinfo="skip", name="Densidad Táctica",
-                zmin=max_val * 0.1, zmax=max_val
+                zmin=max_val * 0.05, zmax=max_val
             ))
 
             # Capa superior con todos los puntos exactos recuperados
             fig.add_trace(go.Scatter(
                 x=df_cancha["x"], y=df_cancha["y"],
                 mode="markers",
-                marker=dict(color="black", size=7, opacity=0.85, line=dict(color="white", width=1.5)),
+                marker=dict(color="black", size=5, opacity=0.5, line=dict(color="white", width=1.5)),
                 text=df_cancha["tipo_evento"].astype(str) + " - J" + df_cancha["jugador"].astype(str),
                 hoverinfo="text", name="Punto Exacto"
             ))
@@ -354,7 +442,7 @@ def render_carga_datos(conn):
     st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
     if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True):
         import os
-        conn.close() # Cerramos conexión para liberar archivo en Windows
+        conn.close()
         if os.path.exists("futsal.db"):
             os.remove("futsal.db")
             st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
@@ -384,27 +472,71 @@ def render_carga_datos(conn):
 
     st.divider()
 
+    # =====================================================
+    # DATOS DEL PARTIDO (se configuran una sola vez al inicio)
+    # =====================================================
+    st.subheader("🗓️ Datos del Partido")
+    st.caption("Configurá esto una sola vez al arrancar la carga; se mantiene fijo para todo el partido.")
+
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        fecha = st.date_input("Fecha del partido", key="fecha_partido")
+    with col_p2:
+        equipo_propio = st.text_input("Equipo propio", key="equipo_propio_partido", placeholder="Ej: Camioneros")
+    with col_p3:
+        rival = st.text_input("Equipo rival", key="rival_partido")
+
+    col_p4, col_p5 = st.columns(2)
+    with col_p4:
+        lado_inicio = st.selectbox(
+            "En el 1T atacamos hacia:",
+            [
+                "Derecha ➡️ (Arco Rival a la Derecha)",
+                "Izquierda ⬅️ (Arco Rival a la Izquierda)"
+            ],
+            key="lado_inicio_1t"
+        )
+    with col_p5:
+        lugar = st.text_input("Lugar / Gimnasio", key="lugar_partido", placeholder="Ej: Polideportivo Municipal")
+
+    st.divider()
+
+    # =====================================================
+    # CONTROL DE POSESIÓN (Reloj Parado)
+    # =====================================================
     st.subheader("⏱️ Control de Posesión (Reloj Parado)")
-    
-    # --- INICIALIZACIÓN DE VARIABLES EN MEMORIA (SESSION STATE) ---
-    if "pos_nuestra_acumulada" not in st.session_state:
-        st.session_state.pos_nuestra_acumulada = 0.0
-    if "pos_rival_acumulada" not in st.session_state:
-        st.session_state.pos_rival_acumulada = 0.0
+
+    for key_pos in ["pos_1t_propio", "pos_1t_rival", "pos_2t_propio", "pos_2t_rival"]:
+        if key_pos not in st.session_state:
+            st.session_state[key_pos] = 0.0
     if "pos_estado_actual" not in st.session_state:
         st.session_state.pos_estado_actual = "Pausa"
     if "pos_ultimo_click" not in st.session_state:
         st.session_state.pos_ultimo_click = None
+    if "pos_tiempo_actual" not in st.session_state:
+        st.session_state.pos_tiempo_actual = "1T"
 
-    # --- LÓGICA DE ACTUALIZACIÓN DE TIEMPOS DE POSESIÓN ---
+    tiempo_pos_sel = st.radio(
+        "Tiempo actual de posesión", ["1T", "2T"],
+        horizontal=True, key="pos_tiempo_widget",
+        index=["1T", "2T"].index(st.session_state.pos_tiempo_actual)
+    )
+    if tiempo_pos_sel != st.session_state.pos_tiempo_actual:
+        st.session_state.pos_tiempo_actual = tiempo_pos_sel
+        st.session_state.pos_estado_actual = "Pausa"
+        st.session_state.pos_ultimo_click = None
+        st.rerun()
+
+    clave_propio = f"pos_{st.session_state.pos_tiempo_actual.lower()}_propio"
+    clave_rival = f"pos_{st.session_state.pos_tiempo_actual.lower()}_rival"
+
     ahora = time.time()
-
     if st.session_state.pos_estado_actual != "Pausa" and st.session_state.pos_ultimo_click is not None:
         transcurrido = ahora - st.session_state.pos_ultimo_click
         if st.session_state.pos_estado_actual == "Nosotros":
-            st.session_state.pos_nuestra_acumulada += transcurrido
+            st.session_state[clave_propio] += transcurrido
         elif st.session_state.pos_estado_actual == "Rival":
-            st.session_state.pos_rival_acumulada += transcurrido
+            st.session_state[clave_rival] += transcurrido
         st.session_state.pos_ultimo_click = ahora
 
     def formatear_tiempo(segundos_totales):
@@ -412,7 +544,12 @@ def render_carga_datos(conn):
         segundos = int(segundos_totales) % 60
         return f"{minutos:02d}:{segundos:02d}"
 
-    # --- DISEÑO DEL CONTROLLER DE POSESIÓN ---
+    _renderizar_reloj_visual(
+        st.session_state[clave_propio],
+        st.session_state[clave_rival],
+        st.session_state.pos_estado_actual
+    )
+
     c_pos1, c_pos2, c_pos3, c_pos4 = st.columns([1.2, 1.2, 1.2, 1])
 
     with c_pos1:
@@ -437,45 +574,40 @@ def render_carga_datos(conn):
             st.rerun()
 
     with c_pos4:
-        if st.button("🔄 RESET", use_container_width=True, help="Reiniciar cronómetros a cero"):
-            st.session_state.pos_nuestra_acumulada = 0.0
-            st.session_state.pos_rival_acumulada = 0.0
+        if st.button("🔄 RESET", use_container_width=True, help="Reiniciar cronómetros de este tiempo a cero"):
+            st.session_state[clave_propio] = 0.0
+            st.session_state[clave_rival] = 0.0
             st.session_state.pos_estado_actual = "Pausa"
             st.session_state.pos_ultimo_click = None
             st.rerun()
 
-    # Marcadores rápidos debajo de los botones de posesión
-    total_tiempo_neto = st.session_state.pos_nuestra_acumulada + st.session_state.pos_rival_acumulada
-    pct_nuestro = (st.session_state.pos_nuestra_acumulada / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
-    pct_rival = (st.session_state.pos_rival_acumulada / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+    total_tiempo_neto = st.session_state[clave_propio] + st.session_state[clave_rival]
+    pct_nuestro = (st.session_state[clave_propio] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+    pct_rival = (st.session_state[clave_rival] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
 
     col_res1, col_res2, col_res3 = st.columns(3)
     with col_res1:
-        st.metric("⏱️ Nuestra Posesión", formatear_tiempo(st.session_state.pos_nuestra_acumulada), f"{pct_nuestro:.1f}%")
+        st.metric(f"⏱️ Nuestra Posesión ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_propio]), f"{pct_nuestro:.1f}%")
     with col_res2:
         estado_icon = "🟢" if st.session_state.pos_estado_actual == "Nosotros" else "🔴" if st.session_state.pos_estado_actual == "Rival" else "⏸️"
         st.metric("Estado Reloj", f"{estado_icon} {st.session_state.pos_estado_actual.upper()}")
     with col_res3:
-        st.metric("⏱️ Posesión Rival", formatear_tiempo(st.session_state.pos_rival_acumulada), f"{pct_rival:.1f}%", delta_color="inverse")
+        st.metric(f"⏱️ Posesión Rival ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_rival]), f"{pct_rival:.1f}%", delta_color="inverse")
+
+    if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
+        if not rival:
+            st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
+        else:
+            guardar_posesion_partido(
+                conn, fecha, rival, equipo_propio, lugar, lado_inicio,
+                st.session_state["pos_1t_propio"], st.session_state["pos_1t_rival"],
+                st.session_state["pos_2t_propio"], st.session_state["pos_2t_rival"]
+            )
+            st.success("✅ Datos del partido y posesión guardados en la base de datos.")
 
     st.divider()
 
     st.subheader("⚡ Carga rápida de eventos (clic en la cancha)")
-
-    col_ctx1, col_ctx2, col_ctx3 = st.columns([1, 1, 1.2])
-    with col_ctx1:
-        fecha = st.date_input("Fecha del partido", key="fecha_partido")
-    with col_ctx2:
-        rival = st.text_input("Equipo rival", key="rival_partido")
-    with col_ctx3:
-        lado_inicio = st.selectbox(
-            "En el 1T atacamos hacia:", 
-            [
-                "Derecha ➡️ (Arco Rival a la Derecha)", 
-                "Izquierda ⬅️ (Arco Rival a la Izquierda)"
-            ],
-            key="lado_inicio_1t"
-        )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -487,15 +619,16 @@ def render_carga_datos(conn):
     with col4:
         equipo = st.selectbox("Equipo", ["Propio", "Rival"], key="equipo_rapido")
 
-    resultado, tipo_tarjeta = "", ""
+    resultado, tipo_tarjeta_sel = "", ""
     if tipo_evento == "Finalizaciones":
-        # ⭐ OPCIONES SÚPER ACTUALIZADAS PARA TU SISTEMA
         resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
+    elif tipo_evento == "Faltas":
+        tipo_tarjeta_sel = st.selectbox("Tarjeta asociada a la falta", ["Sin tarjeta", "Amarilla", "Roja"], key="tipo_tarjeta_falta")
     elif tipo_evento == "Tarjetas":
-        tipo_tarjeta = st.selectbox("Tipo de tarjeta", ["Amarilla", "Roja"], key="tipo_tarjeta_rapido")
+        tipo_tarjeta_sel = st.selectbox("Tipo de tarjeta", ["Amarilla", "Roja"], key="tipo_tarjeta_rapido")
 
     st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en la cancha táctica. El sistema procesará automáticamente el lado de ataque actual según tu configuración de sorteo.")
-    
+
     fig_cancha = crear_figura_cancha()
 
     evento_click = st.plotly_chart(
@@ -511,8 +644,7 @@ def render_carga_datos(conn):
         if not jugador:
             st.warning("⚠️ Ingresá el número de jugador antes de hacer clic en la cancha")
         elif st.session_state.get("ultimo_click_registrado") != click_id:
-            
-            # --- LÓGICA INTELIGENTE DE DETERMINACIÓN DE LADOS ---
+
             es_1t_y_ataca_izquierda = (tiempo == "1T" and "Izquierda" in lado_inicio)
             es_2t_y_ataca_izquierda = (tiempo == "2T" and "Derecha" in lado_inicio)
 
@@ -525,14 +657,18 @@ def render_carga_datos(conn):
                 x_guardar = x_click
                 y_guardar = y_click
 
-            # Guardamos los datos normalizados en la DB
+            tipo_tarjeta_final = ""
+            if tipo_evento in ("Faltas", "Tarjetas") and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
+                tipo_tarjeta_final = resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sel)
+
             insertar_evento_individual(
                 conn, fecha, rival, tipo_evento, tiempo, equipo,
-                jugador, zona, resultado, tipo_tarjeta, x=x_guardar, y=y_guardar
+                jugador, zona, resultado, tipo_tarjeta_final, x=x_guardar, y=y_guardar
             )
 
             st.session_state["ultimo_click_registrado"] = click_id
-            st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}. Guardado de manera normalizada.")
+            mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
+            st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
             st.rerun()
     else:
         st.caption("📍 Esperando clic posicional...")
