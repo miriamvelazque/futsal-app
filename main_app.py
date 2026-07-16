@@ -563,7 +563,7 @@ def render_dashboard_general(conn):
 
     # --- BARRA DE FILTROS SUPERIOR ---
     st.markdown("### 🔍 Filtros Globales")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         partidos_disponibles = ["Todos"] + sorted(list(df_eventos["partido"].dropna().unique()), reverse=True)
         partido_sel = st.selectbox("Filtrar por Partido (Fecha - Rival)", partidos_disponibles)
@@ -573,6 +573,9 @@ def render_dashboard_general(conn):
     with c3:
         tipos_disponibles = ["Todos"] + list(df_eventos["tipo_evento"].dropna().unique())
         tipo_sel = st.selectbox("Filtrar por Tipo de Acción", tipos_disponibles)
+    with c4:
+        equipos_disponibles = ["Todos"] + sorted(list(df_eventos["equipo"].dropna().unique()))
+        equipo_sel = st.selectbox("Filtrar por Equipo", equipos_disponibles)
 
     # Filtros cruzados
     df_filtrado = df_eventos.copy()
@@ -582,6 +585,8 @@ def render_dashboard_general(conn):
         df_filtrado = df_filtrado[df_filtrado["jugador"] == jugador_sel]
     if tipo_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["tipo_evento"] == tipo_sel]
+    if equipo_sel != "Todos":
+       df_filtrado = df_filtrado[df_filtrado["equipo"] == equipo_sel]    
 
     # --- INDICADORES ---
     st.divider()
@@ -603,7 +608,7 @@ def render_dashboard_general(conn):
 
     with col_izq:
         st.subheader("📍 Mapa de Distribución y Calor de Futsal")
-        txt_mapa = f"Filtro - Jugador: {jugador_sel} | Acción: {tipo_sel}"
+        txt_mapa = f"Filtro - Jugador: {jugador_sel} | Acción: {tipo_sel} | Equipo: {equipo_sel}"
         fig_heatmap = generar_heatmap_analisis(df_filtrado, titulo_mapa=txt_mapa)
         st.plotly_chart(fig_heatmap, use_container_width=True)
 
@@ -622,7 +627,7 @@ def render_dashboard_general(conn):
         else:
             st.info("Sin datos para generar gráficos.")
 
-    # --- NUEVA SECCIÓN: DESGLOSE DE FINALIZACIONES Y TABLA DE GOLEADORES (Fila Inferior) ---
+    # --- DESGLOSE DE FINALIZACIONES Y TABLA DE GOLEADORES (Fila Inferior) ---
     if not df_filtrado.empty:
         df_finalizaciones = df_filtrado[df_filtrado["tipo_evento"] == "Finalizaciones"]
         
@@ -695,19 +700,25 @@ def render_rendimiento_individual(conn):
 
     # --- PANEL DE FILTROS INDIVIDUALES ---
     st.markdown("### 🔍 Filtros de Jugador")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
     with col_f1:
-        jugadores_disponibles = sorted(df_eventos["jugador"].dropna().unique())
-        jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
-    
-    df_base_jugador = df_eventos[df_eventos["jugador"] == jugador_sel]
+       equipos_disponibles = sorted(df_eventos["equipo"].dropna().unique())
+       equipo_sel = st.selectbox("Seleccionar Equipo", equipos_disponibles, key="rend_equipo_sel")
+
+    df_base_equipo = df_eventos[df_eventos["equipo"] == equipo_sel]
     
     with col_f2:
-        partidos_disponibles = ["Todos"] + sorted(list(df_base_jugador["partido"].dropna().unique()), reverse=True)
-        partido_sel = st.selectbox("Filtrar por Partido / Rival", partidos_disponibles, key="rend_rival_sel")
-    
+       jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique())
+       jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
+
+    df_base_jugador = df_base_equipo[df_base_equipo["jugador"] == jugador_sel]
+
     with col_f3:
+       partidos_disponibles = ["Todos"] + sorted(list(df_base_jugador["partido"].dropna().unique()), reverse=True)
+       partido_sel = st.selectbox("Filtrar por Partido / Rival", partidos_disponibles, key="rend_rival_sel")
+
+    with col_f4:
         tiempos_disponibles = ["Todos"] + list(df_base_jugador["tiempo"].dropna().unique())
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles, key="rend_tiempo_sel")
 
@@ -720,7 +731,7 @@ def render_rendimiento_individual(conn):
     st.divider()
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
-    st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel}")
+    st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
     m1, m2, m3, m4 = st.columns(4)
     
     with m1:
@@ -744,7 +755,7 @@ def render_rendimiento_individual(conn):
 
     with col_mapa:
         st.subheader("📍 Mapa de Calor Propio")
-        txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel}"
+        txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel} ({equipo_sel})"
         fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_filtrado, titulo_mapa=txt_mapa_indiv)
         st.plotly_chart(fig_heatmap_indiv, use_container_width=True, key="heatmap_individual_chart")
 
@@ -763,7 +774,7 @@ def render_rendimiento_individual(conn):
         
         if not df_fin_jugador.empty:
             st.divider()
-            st.markdown(f"### 🎯 Efectividad de Remates - Jugador {jugador_sel}")
+            st.markdown(f"### 🎯 Efectividad de Remates - Jugador {jugador_sel} ({equipo_sel})")
             col_t_ind, col_g_ind = st.columns([1, 1.2])
             
             with col_t_ind:
