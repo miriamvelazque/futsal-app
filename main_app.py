@@ -8,6 +8,11 @@ import json
 import hashlib  # Para encriptar contraseñas de forma segura
 import time
 import streamlit.components.v1 as components
+import os
+from datetime import date
+PLAYER_PHOTOS_DIR = "player_photos"
+os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
+
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -107,6 +112,30 @@ def init_db(conn):
                     rol TEXT
                 )""")
     
+    # Tabla de jugadores
+    c.execute("""CREATE TABLE IF NOT EXISTS jugadores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nombre TEXT,
+                    apellido TEXT,
+                    dni TEXT UNIQUE,
+                    comet TEXT,
+                    fecha_nacimiento TEXT,
+                    numero_camiseta INTEGER,
+                    posicion TEXT,
+                    pie_habil TEXT,
+                    grupo_sanguineo TEXT,
+                    obra_social TEXT,
+                    telefono TEXT,
+                    direccion TEXT,
+                    contacto_emergencia_nombre TEXT,
+                    contacto_emergencia_telefono TEXT,
+                    estado TEXT DEFAULT 'Habilitado',
+                    foto_path TEXT,
+                    fecha_alta TEXT,
+                    observaciones TEXT,
+                    activo INTEGER DEFAULT 1
+                )""")
+    
     # --- MANTENIMIENTO DE COLUMNAS (ALTER TABLE) ---
     
     # Asegurar columnas X e Y en eventos
@@ -152,6 +181,20 @@ def init_db(conn):
         clave_dt = encriptar_clave(pass_dt)
         c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)", 
                   ("dt_troncos", clave_dt, "Lector"))
+        
+     # Migración futura de columnas (mismo patrón que usás en partidos)
+    c.execute("PRAGMA table_info(jugadores)")
+    columnas_jugadores = [col[1] for col in c.fetchall()]
+    nuevas_columnas_jugadores = {
+        "posicion": "TEXT", "pie_habil": "TEXT", "estado": "TEXT DEFAULT 'Habilitado'",
+        "contacto_emergencia_nombre": "TEXT", "contacto_emergencia_telefono": "TEXT",
+        "fecha_alta": "TEXT", "observaciones": "TEXT", "activo": "INTEGER DEFAULT 1",
+    }
+    for col_nombre, col_tipo in nuevas_columnas_jugadores.items():
+        if col_nombre not in columnas_jugadores:
+            c.execute(f"ALTER TABLE jugadores ADD COLUMN {col_nombre} {col_tipo}")
+
+    os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
         
     conn.commit()
 
@@ -243,6 +286,111 @@ def resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sele
         return "Roja (2da Amarilla)"
     return "Amarilla"
 
+# =========================================================
+# CAPA DE DATOS: JUGADORES (CRUD)
+# =========================================================
+def calcular_edad(fecha_nacimiento_str):
+    """Calcula la edad actual a partir de la fecha de nacimiento (string ISO)."""
+    if not fecha_nacimiento_str:
+        return None
+    try:
+        fn = pd.to_datetime(fecha_nacimiento_str).date()
+        hoy = date.today()
+        return hoy.year - fn.year - ((hoy.month, hoy.day) < (fn.month, fn.day))
+    except Exception:
+        return None
+
+
+def guardar_foto_jugador(uploaded_file, dni):
+    """Guarda la foto subida en disco usando el DNI como nombre de archivo único."""
+    if uploaded_file is None:
+        return None
+    ext = uploaded_file.name.split(".")[-1].lower()
+    path = os.path.join(PLAYER_PHOTOS_DIR, f"{dni}.{ext}")
+    with open(path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return path
+
+
+def dni_ya_existe(conn, dni, excluir_id=None):
+    """Chequea unicidad de DNI, excluyendo opcionalmente el propio registro (para ediciones)."""
+    c = conn.cursor()
+    if excluir_id is not None:
+        c.execute("SELECT COUNT(*) FROM jugadores WHERE dni = ? AND id != ?", (dni, excluir_id))
+    else:
+        c.execute("SELECT COUNT(*) FROM jugadores WHERE dni = ?", (dni,))
+    return c.fetchone()[0] > 0
+
+
+def insertar_jugador(conn, datos):
+    """Inserta un nuevo jugador. `datos` es un dict con las claves de la tabla."""
+    c = conn.cursor()
+    c.execute("""INSERT INTO jugadores
+                 (nombre, apellido, dni, comet, fecha_nacimiento, numero_camiseta, posicion,
+                  pie_habil, grupo_sanguineo, obra_social, telefono, direccion,
+                  contacto_emergencia_nombre, contacto_emergencia_telefono, estado,
+                  foto_path, fecha_alta, observaciones, activo)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+              (datos["nombre"], datos["apellido"], datos["dni"], datos["comet"],
+               datos["fecha_nacimiento"], datos["numero_camiseta"], datos["posicion"],
+               datos["pie_habil"], datos["grupo_sanguineo"], datos["obra_social"],
+               datos["telefono"], datos["direccion"], datos["contacto_emergencia_nombre"],
+               datos["contacto_emergencia_telefono"], datos["estado"], datos["foto_path"],
+               str(date.today()), datos["observaciones"]))
+    conn.commit()
+
+
+def actualizar_jugador(conn, jugador_id, datos):
+    """Actualiza los campos de un jugador existente."""
+    c = conn.cursor()
+    c.execute("""UPDATE jugadores SET nombre=?, apellido=?, dni=?, comet=?, fecha_nacimiento=?,
+                 numero_camiseta=?, posicion=?, pie_habil=?, grupo_sanguineo=?, obra_social=?,
+                 telefono=?, direccion=?, contacto_emergencia_nombre=?, contacto_emergencia_telefono=?,
+                 estado=?, observaciones=?
+                 WHERE id=?""",
+              (datos["nombre"], datos["apellido"], datos["dni"], datos["comet"],
+               datos["fecha_nacimiento"], datos["numero_camiseta"], datos["posicion"],
+               datos["pie_habil"], datos["grupo_sanguineo"], datos["obra_social"],
+               datos["telefono"], datos["direccion"], datos["contacto_emergencia_nombre"],
+               datos["contacto_emergencia_telefono"], datos["estado"], datos["observaciones"],
+               jugador_id))
+    if datos.get("foto_path"):
+        c.execute("UPDATE jugadores SET foto_path=? WHERE id=?", (datos["foto_path"], jugador_id))
+    conn.commit()
+
+
+def cargar_jugadores_df(conn, solo_activos=True):
+    """Devuelve el DataFrame del plantel."""
+    query = "SELECT * FROM jugadores"
+    if solo_activos:
+        query += " WHERE activo = 1"
+    query += " ORDER BY numero_camiseta"
+    df = pd.read_sql(query, conn)
+    return df if not df.empty else None
+
+
+def dar_baja_jugador(conn, jugador_id):
+    """Borrado lógico: no elimina el registro, lo marca inactivo para preservar el historial."""
+    c = conn.cursor()
+    c.execute("UPDATE jugadores SET activo = 0, estado = 'Inactivo' WHERE id = ?", (jugador_id,))
+    conn.commit()
+
+def buscar_jugador_por_numero(conn, numero_camiseta):
+    """Busca la ficha de un jugador propio por su número de camiseta (solo activos)."""
+    try:
+        numero = int(numero_camiseta)
+    except (ValueError, TypeError):
+        return None
+    c = conn.cursor()
+    c.execute("""SELECT nombre, apellido, comet, foto_path, posicion, fecha_nacimiento
+                 FROM jugadores WHERE numero_camiseta = ? AND activo = 1""", (numero,))
+    row = c.fetchone()
+    if row is None:
+        return None
+    return {
+        "nombre": row[0], "apellido": row[1], "comet": row[2],
+        "foto_path": row[3], "posicion": row[4], "fecha_nacimiento": row[5],
+    }    
 
 def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual):
     """Reloj visual que sigue sumando en el navegador entre reruns (solo visual;
@@ -864,6 +1012,20 @@ def render_rendimiento_individual(conn):
     if tiempo_sel != "Todos":
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tiempo"] == tiempo_sel]
 
+   # --- MINI FICHA DEL JUGADOR (solo si es de nuestro plantel registrado) ---
+    if equipo_sel == "Propio":
+        ficha = buscar_jugador_por_numero(conn, jugador_sel)
+        if ficha:
+            col_foto, col_datos = st.columns([1, 5])
+            with col_foto:
+                if ficha["foto_path"] and os.path.exists(ficha["foto_path"]):
+                    st.image(ficha["foto_path"], width=80)
+                else:
+                    st.markdown("### 👤")
+            with col_datos:
+                edad = calcular_edad(ficha["fecha_nacimiento"])
+                st.markdown(f"**{ficha['apellido']}, {ficha['nombre']}**")
+                st.caption(f"COMET: {ficha['comet'] or '—'} · {ficha['posicion'] or '—'} · {edad if edad is not None else '—'} años")
     st.divider()
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
@@ -936,6 +1098,194 @@ def render_rendimiento_individual(conn):
                 )
                 st.plotly_chart(fig_torta_j, use_container_width=True, key="torta_individual_finalizaciones")
 
+# =========================================================
+# PESTAÑA 4: PLANTEL DE JUGADORES
+# =========================================================
+
+def render_jugadores(conn, rol_actual):
+    st.header("🪪 Plantel de Jugadores")
+
+    POSICIONES = ["Arquero", "Cierre", "Ala Derecha", "Ala Izquierda", "Pivot", "Universal"]
+    PIES = ["Derecho", "Izquierdo", "Ambidiestro"]
+    GRUPOS_SANGUINEOS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Desconocido"]
+    ESTADOS = ["Habilitado", "Lesionado", "Suspendido", "Inactivo"]
+    COLOR_ESTADO = {"Habilitado": "🟢", "Lesionado": "🟡", "Suspendido": "🔴", "Inactivo": "⚫"}
+
+    puede_editar = rol_actual == "Administrador"
+    nombres_tabs = ["📋 Ver Plantel", "➕ Agregar Jugador", "✏️ Editar / Baja"] if puede_editar else ["📋 Ver Plantel"]
+    tabs = st.tabs(nombres_tabs)
+
+    # -----------------------------------------------------
+    # TAB: VER PLANTEL
+    # -----------------------------------------------------
+    with tabs[0]:
+        df_jug = cargar_jugadores_df(conn)
+        if df_jug is None:
+            st.info("Todavía no cargaste jugadores en el plantel.")
+        else:
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                pos_filtro = st.selectbox("Filtrar por posición", ["Todas"] + POSICIONES, key="jug_filtro_pos")
+            with col_f2:
+                estado_filtro = st.selectbox("Filtrar por estado", ["Todos"] + ESTADOS, key="jug_filtro_estado")
+
+            df_vista = df_jug.copy()
+            if pos_filtro != "Todas":
+                df_vista = df_vista[df_vista["posicion"] == pos_filtro]
+            if estado_filtro != "Todos":
+                df_vista = df_vista[df_vista["estado"] == estado_filtro]
+
+            st.caption(f"{len(df_vista)} jugador/es en el plantel")
+            st.divider()
+
+            columnas = st.columns(4)
+            for i, (_, jug) in enumerate(df_vista.iterrows()):
+                with columnas[i % 4]:
+                    with st.container(border=True):
+                        if jug["foto_path"] and os.path.exists(jug["foto_path"]):
+                            st.image(jug["foto_path"], use_container_width=True)
+                        else:
+                            st.markdown("### 👤")
+                        edad = calcular_edad(jug["fecha_nacimiento"])
+                        st.markdown(f"**#{int(jug['numero_camiseta']) if pd.notna(jug['numero_camiseta']) else '-'} {jug['apellido']}, {jug['nombre']}**")
+                        st.caption(f"{jug['posicion'] or '-'} · {edad if edad is not None else '-'} años")
+                        st.caption(f"COMET: {jug['comet'] or '—'}")
+                        st.caption(f"{COLOR_ESTADO.get(jug['estado'], '⚪')} {jug['estado']}")
+
+    # -----------------------------------------------------
+    # TAB: AGREGAR JUGADOR (solo Administrador)
+    # -----------------------------------------------------
+    if puede_editar:
+        with tabs[1]:
+            st.subheader("Nueva ficha de jugador")
+            with st.form("form_nuevo_jugador", clear_on_submit=True):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    nombre = st.text_input("Nombre*")
+                    dni = st.text_input("DNI*")
+                    comet = st.text_input("Número de COMET")
+                with c2:
+                    apellido = st.text_input("Apellido*")
+                    fecha_nac = st.date_input("Fecha de nacimiento", min_value=date(1970, 1, 1), max_value=date.today())
+                    numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1)
+                with c3:
+                    posicion = st.selectbox("Posición", POSICIONES)
+                    pie_habil = st.selectbox("Pie hábil", PIES)
+                    estado = st.selectbox("Estado", ESTADOS)
+
+                st.markdown("**Datos de contacto y salud**")
+                c4, c5, c6 = st.columns(3)
+                with c4:
+                    telefono = st.text_input("Teléfono")
+                    direccion = st.text_input("Dirección")
+                with c5:
+                    grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS)
+                    obra_social = st.text_input("Obra social")
+                with c6:
+                    contacto_emerg_nombre = st.text_input("Contacto de emergencia")
+                    contacto_emerg_tel = st.text_input("Teléfono de emergencia")
+
+                observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)")
+                foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"])
+
+                enviado = st.form_submit_button("💾 Guardar jugador", type="primary", use_container_width=True)
+
+                if enviado:
+                    if not nombre or not apellido or not dni:
+                        st.warning("⚠️ Nombre, Apellido y DNI son obligatorios.")
+                    elif dni_ya_existe(conn, dni):
+                        st.error("❌ Ya existe un jugador cargado con ese DNI.")
+                    else:
+                        foto_path = guardar_foto_jugador(foto, dni)
+                        insertar_jugador(conn, {
+                            "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
+                            "fecha_nacimiento": str(fecha_nac), "numero_camiseta": numero_camiseta,
+                            "posicion": posicion, "pie_habil": pie_habil, "grupo_sanguineo": grupo_sanguineo,
+                            "obra_social": obra_social, "telefono": telefono, "direccion": direccion,
+                            "contacto_emergencia_nombre": contacto_emerg_nombre,
+                            "contacto_emergencia_telefono": contacto_emerg_tel, "estado": estado,
+                            "foto_path": foto_path, "observaciones": observaciones,
+                        })
+                        st.success(f"✅ {nombre} {apellido} agregado al plantel.")
+                        st.rerun()
+
+    # -----------------------------------------------------
+    # TAB: EDITAR / BAJA (solo Administrador)
+    # -----------------------------------------------------
+    if puede_editar:
+        with tabs[2]:
+            df_jug_edit = cargar_jugadores_df(conn)
+            if df_jug_edit is None:
+                st.info("No hay jugadores para editar.")
+            else:
+                opciones = {
+                    f"#{int(r['numero_camiseta']) if pd.notna(r['numero_camiseta']) else '-'} - {r['apellido']}, {r['nombre']} (DNI {r['dni']})": r["id"]
+                    for _, r in df_jug_edit.iterrows()
+                }
+                seleccion = st.selectbox("Seleccioná un jugador", list(opciones.keys()), key="jug_edit_sel")
+                jugador_id = opciones[seleccion]
+                jug = df_jug_edit[df_jug_edit["id"] == jugador_id].iloc[0]
+
+                with st.form("form_editar_jugador"):
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        nombre = st.text_input("Nombre*", value=jug["nombre"])
+                        dni = st.text_input("DNI*", value=jug["dni"])
+                        comet = st.text_input("Número de COMET", value=jug["comet"] or "")
+                    with c2:
+                        apellido = st.text_input("Apellido*", value=jug["apellido"])
+                        fecha_nac = st.date_input("Fecha de nacimiento", value=pd.to_datetime(jug["fecha_nacimiento"]).date() if jug["fecha_nacimiento"] else date.today())
+                        numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1, value=int(jug["numero_camiseta"]) if pd.notna(jug["numero_camiseta"]) else 0)
+                    with c3:
+                        posicion = st.selectbox("Posición", POSICIONES, index=POSICIONES.index(jug["posicion"]) if jug["posicion"] in POSICIONES else 0)
+                        pie_habil = st.selectbox("Pie hábil", PIES, index=PIES.index(jug["pie_habil"]) if jug["pie_habil"] in PIES else 0)
+                        estado = st.selectbox("Estado", ESTADOS, index=ESTADOS.index(jug["estado"]) if jug["estado"] in ESTADOS else 0)
+
+                    c4, c5, c6 = st.columns(3)
+                    with c4:
+                        telefono = st.text_input("Teléfono", value=jug["telefono"] or "")
+                        direccion = st.text_input("Dirección", value=jug["direccion"] or "")
+                    with c5:
+                        grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, index=GRUPOS_SANGUINEOS.index(jug["grupo_sanguineo"]) if jug["grupo_sanguineo"] in GRUPOS_SANGUINEOS else 8)
+                        obra_social = st.text_input("Obra social", value=jug["obra_social"] or "")
+                    with c6:
+                        contacto_emerg_nombre = st.text_input("Contacto de emergencia", value=jug["contacto_emergencia_nombre"] or "")
+                        contacto_emerg_tel = st.text_input("Teléfono de emergencia", value=jug["contacto_emergencia_telefono"] or "")
+
+                    observaciones = st.text_area("Observaciones", value=jug["observaciones"] or "")
+                    nueva_foto = st.file_uploader("Reemplazar foto (opcional)", type=["jpg", "jpeg", "png"])
+
+                    col_upd, col_baja = st.columns(2)
+                    with col_upd:
+                        actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True)
+                    with col_baja:
+                        confirmar_baja = st.checkbox("Confirmo la baja de este jugador")
+                        dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True)
+
+                    if actualizar:
+                        if dni_ya_existe(conn, dni, excluir_id=jugador_id):
+                            st.error("❌ Ese DNI ya pertenece a otro jugador.")
+                        else:
+                            foto_path = guardar_foto_jugador(nueva_foto, dni) if nueva_foto else None
+                            actualizar_jugador(conn, jugador_id, {
+                                "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
+                                "fecha_nacimiento": str(fecha_nac), "numero_camiseta": numero_camiseta,
+                                "posicion": posicion, "pie_habil": pie_habil, "grupo_sanguineo": grupo_sanguineo,
+                                "obra_social": obra_social, "telefono": telefono, "direccion": direccion,
+                                "contacto_emergencia_nombre": contacto_emerg_nombre,
+                                "contacto_emergencia_telefono": contacto_emerg_tel, "estado": estado,
+                                "foto_path": foto_path, "observaciones": observaciones,
+                            })
+                            st.success("✅ Ficha actualizada.")
+                            st.rerun()
+
+                    if dar_baja:
+                        if not confirmar_baja:
+                            st.warning("⚠️ Marcá la casilla de confirmación para dar de baja al jugador.")
+                        else:
+                            dar_baja_jugador(conn, jugador_id)
+                            st.success("Jugador dado de baja (queda inactivo, no se borra el historial).")
+                            st.rerun()
 
 # =========================================================
 # FUNCIÓN PRINCIPAL (MAIN con Gestión de Sesión)
@@ -971,7 +1321,7 @@ def main():
     if rol_actual == "Administrador":
         # Acceso total a todas las funciones
         st.title("📊 Planilla Digital de Futsal - Panel Admin")
-        tab1, tab2, tab3 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
         with tab1:
             render_carga_datos(conn)
@@ -979,16 +1329,20 @@ def main():
             render_dashboard_general(conn)
         with tab3:
             render_rendimiento_individual(conn)
+        with tab4:
+            render_jugadores(conn, rol_actual)
             
     elif rol_actual == "Lector":
         # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
         st.title("📊 Planilla Digital de Futsal")
-        tab2, tab3 = st.tabs(["Dashboard General", "Rendimiento Individual"])
+        tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
         with tab2:
             render_dashboard_general(conn)
         with tab3:
             render_rendimiento_individual(conn)
+        with tab4:
+            render_jugadores(conn, rol_actual)
 
 
 if __name__ == "__main__":
