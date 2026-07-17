@@ -306,7 +306,7 @@ def guardar_foto_jugador(uploaded_file, dni):
     if uploaded_file is None:
         return None
     ext = uploaded_file.name.split(".")[-1].lower()
-    path = os.path.join(PLAYER_PHOTOS_DIR, f"{dni}.{ext}")
+    path = f"{PLAYER_PHOTOS_DIR}/{dni}.{ext}"
     with open(path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return path
