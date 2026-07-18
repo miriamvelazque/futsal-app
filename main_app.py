@@ -814,9 +814,9 @@ def render_carga_datos(conn):
     elif tipo_evento == "ABP":
         col_abp1, col_abp2 = st.columns(2)
         with col_abp1:
-            tipo_abp_sel = st.selectbox("Tipo de ABP", ["Córner", "Tiro Libre", "Lateral"], key="tipo_abp_rapido")
+            tipo_abp_sel = st.selectbox("Tipo de ABP", ["Córner", "Tiro Libre", "Lateral zona alta"], key="tipo_abp_rapido")
         with col_abp2:
-            lado_abp_sel = st.selectbox("Lado", ["Derecho", "Izquierdo"], key="lado_abp_rapido")
+            lado_abp_sel = st.selectbox("Lado (ref.Ataque)", ["Derecho", "Izquierdo"], key="lado_abp_rapido")
 
     # -----------------------------------------------------
     # ABP: registro directo por botón (no requiere clic en cancha ni jugador)
