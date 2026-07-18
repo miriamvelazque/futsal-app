@@ -12,6 +12,8 @@ import os
 from datetime import date
 PLAYER_PHOTOS_DIR = "player_photos"
 os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
+# Duración de cada tiempo en segundos (20 min = 1200 seg)
+DURACION_TOTAL_SEGUNDOS = 1200
 
 
 # =========================================================
@@ -333,14 +335,31 @@ def calcular_edad(fecha_nacimiento_str):
         return None
 
 
+FOTO_JUGADOR_LADO_PX = 320  # Tamaño fijo (cuadrado) al que se normalizan todas las fotos del plantel
+
+
 def guardar_foto_jugador(uploaded_file, dni):
-    """Guarda la foto subida en disco usando el DNI como nombre de archivo único."""
+    """Guarda la foto subida en disco, recortada a un cuadrado fijo (centrado) y
+    reescalada, para que todas las fotos del plantel se vean del mismo tamaño
+    sin importar la relación de aspecto de la imagen original."""
     if uploaded_file is None:
         return None
-    ext = uploaded_file.name.split(".")[-1].lower()
-    path = f"{PLAYER_PHOTOS_DIR}/{dni}.{ext}"
-    with open(path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    path = f"{PLAYER_PHOTOS_DIR}/{dni}.jpg"
+    try:
+        from PIL import Image, ImageOps
+        imagen = Image.open(uploaded_file)
+        imagen = ImageOps.exif_transpose(imagen)  # corrige rotación de fotos tomadas con celular
+        imagen = imagen.convert("RGB")
+        imagen_cuadrada = ImageOps.fit(
+            imagen, (FOTO_JUGADOR_LADO_PX, FOTO_JUGADOR_LADO_PX), Image.LANCZOS
+        )
+        imagen_cuadrada.save(path, "JPEG", quality=87)
+    except Exception:
+        # Fallback: si algo falla al procesar la imagen, guardamos el archivo tal cual
+        ext = uploaded_file.name.split(".")[-1].lower()
+        path = f"{PLAYER_PHOTOS_DIR}/{dni}.{ext}"
+        with open(path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
     return path
 
 
@@ -424,37 +443,61 @@ def buscar_jugador_por_numero(conn, numero_camiseta):
         "foto_path": row[3], "posicion": row[4], "fecha_nacimiento": row[5],
     }    
 
-def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual):
-    """Reloj visual que sigue sumando en el navegador entre reruns (solo visual;
-    la fuente de verdad del cálculo real sigue siendo session_state en el servidor)."""
+def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual, segundos_restante):
+    """Reloj visual que sigue corriendo en el navegador entre reruns (solo visual;
+    la fuente de verdad del cálculo real sigue siendo session_state en el servidor).
+    Muestra el tiempo restante del período (20:00 -> 0:00) en grande, con los
+    contadores de posesión propia/rival como referencia más chica al lado."""
     incrementa_nuestra = 1 if estado_actual == "Nosotros" else 0
     incrementa_rival = 1 if estado_actual == "Rival" else 0
+    incrementa_restante = 1 if estado_actual != "Pausa" else 0
     html = f"""
-    <div style="display:flex; gap:24px; justify-content:center; font-family:monospace; font-size:28px; color:white; padding:8px;">
-        <div>🟢 <span id="reloj_nuestra">00:00</span></div>
-        <div>🔴 <span id="reloj_rival">00:00</span></div>
+    <div style="display:flex; align-items:center; justify-content:center; gap:36px; font-family:monospace; padding:10px; flex-wrap:wrap;">
+        <div style="text-align:center;">
+            <div style="font-size:13px; color:#9ca3af; letter-spacing:1px;">⏳ TIEMPO RESTANTE</div>
+            <div id="reloj_restante" style="font-size:46px; font-weight:bold; color:#facc15; line-height:1.1;">00:00</div>
+        </div>
+        <div style="display:flex; gap:20px;">
+            <div style="text-align:center;">
+                <div style="font-size:12px; color:#9ca3af;">🟢 PROPIA</div>
+                <div id="reloj_nuestra" style="font-size:22px; color:white;">00:00</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:12px; color:#9ca3af;">🔴 RIVAL</div>
+                <div id="reloj_rival" style="font-size:22px; color:white;">00:00</div>
+            </div>
+        </div>
     </div>
     <script>
     let segNuestra = {segundos_nuestra};
     let segRival = {segundos_rival};
+    let segRestante = {segundos_restante};
     const incNuestra = {incrementa_nuestra};
     const incRival = {incrementa_rival};
+    const incRestante = {incrementa_restante};
     function formatear(s) {{
+        s = Math.max(0, s);
         const m = Math.floor(s / 60).toString().padStart(2, '0');
         const ss = Math.floor(s % 60).toString().padStart(2, '0');
         return m + ":" + ss;
     }}
-    document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
-    document.getElementById("reloj_rival").innerText = formatear(segRival);
+    function actualizar() {{
+        document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
+        document.getElementById("reloj_rival").innerText = formatear(segRival);
+        const elRestante = document.getElementById("reloj_restante");
+        elRestante.innerText = formatear(segRestante);
+        elRestante.style.color = segRestante <= 0 ? "#ef4444" : "#facc15";
+    }}
+    actualizar();
     setInterval(() => {{
         segNuestra += incNuestra;
         segRival += incRival;
-        document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
-        document.getElementById("reloj_rival").innerText = formatear(segRival);
+        segRestante = Math.max(0, segRestante - incRestante);
+        actualizar();
     }}, 1000);
     </script>
     """
-    components.html(html, height=70)
+    components.html(html, height=110)
 
 # =========================================================
 # COMPONENTES GRÁFICOS Y TRAZADO TÁCTICO FIEL A LA REFERENCIA
@@ -464,8 +507,32 @@ CANCHA_ALTO = 20   # metros real (eje Y)
 
 # Equipos de la liga precargados para los selectores de "Equipo propio" / "Equipo rival"
 EQUIPOS_LIGA = [
-    "LOS TRONCOS", "CAMIONEROS", "ROSARIO", "HVJ",
-    "ADEFU", "DEFENSORES DEL SUR", "ESTRELLA AUSTRAL",
+"CAMIONEROS",
+    "SAN ISIDRO",
+    "LUZ Y FUERZA",
+    "METALURGICO",
+    "ROSARIO",
+    "SAN FRANCISCO",
+    "DEPORTIVO RIO GRANDE",
+    "ADEFU",
+    "ESCUELA ARGENTINA",
+    "MUNICIPAL",
+    "ESTRELLA AUSTRAL",
+    "LOS TRONCOS",
+    "ITALIANO",
+    "DEFENSORES DEL SUR",
+    "ALBATROS",
+    "DEPORTIVO FRIAS",
+    "MUTU RG",
+    "BARCELONA",
+    "VICTORIA",
+    "INTER RG",
+    "HVJ FUTSAL",
+    "CERBERO",
+    "UNION SANTIAGO",
+    "DEF. DE MALVINAS",
+    "18 DE DICIEMPRE",
+    "LION"
 ]
 OPCION_OTRO_EQUIPO = "Otro (escribir manualmente)"
 DURACION_TIEMPO_SEG = 20 * 60  # Duración reglamentaria de cada tiempo (20 minutos)
@@ -729,105 +796,150 @@ def render_carga_datos(conn):
     st.divider()
 
     # =====================================================
-    # CONTROL DE POSESIÓN (Reloj Parado)
+    # CONTROL DE POSESIÓN (Integrado: Manual o Reloj)
     # =====================================================
-    st.subheader("⏱️ Control de Posesión (Reloj Parado)")
+    st.subheader("⏱️ Control de Posesión")
+    
+    # 1. Configuración de Modo
+    modo_manual = st.checkbox("Activar carga manual de posesión (%)", key="modo_manual_check")
 
-    for key_pos in ["pos_1t_propio", "pos_1t_rival", "pos_2t_propio", "pos_2t_rival"]:
-        if key_pos not in st.session_state:
-            st.session_state[key_pos] = 0.0
-    if "pos_estado_actual" not in st.session_state:
-        st.session_state.pos_estado_actual = "Pausa"
-    if "pos_ultimo_click" not in st.session_state:
-        st.session_state.pos_ultimo_click = None
-    if "pos_tiempo_actual" not in st.session_state:
-        st.session_state.pos_tiempo_actual = "1T"
+    if modo_manual:
+        # Lógica Manual
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.session_state["pos_1t_propio_pct"] = st.slider("Posesión Propia 1T (%)", 0, 100, 50)
+            st.session_state["pos_2t_propio_pct"] = st.slider("Posesión Propia 2T (%)", 0, 100, 50)
+        with col_m2:
+            st.metric("Posesión Rival 1T", f"{100 - st.session_state['pos_1t_propio_pct']}%")
+            st.metric("Posesión Rival 2T", f"{100 - st.session_state['pos_2t_propio_pct']}%")
+        
+        # Conversión automática a segundos para el guardado (1200 seg = 20 min)
+        DURACION = 1200
+        st.session_state["pos_1t_propio"] = (st.session_state["pos_1t_propio_pct"] / 100) * DURACION
+        st.session_state["pos_1t_rival"] = DURACION - st.session_state["pos_1t_propio"]
+        st.session_state["pos_2t_propio"] = (st.session_state["pos_2t_propio_pct"] / 100) * DURACION
+        st.session_state["pos_2t_rival"] = DURACION - st.session_state["pos_2t_propio"]
 
-    tiempo_pos_sel = st.radio(
-        "Tiempo actual de posesión", ["1T", "2T"],
-        horizontal=True, key="pos_tiempo_widget",
-        index=["1T", "2T"].index(st.session_state.pos_tiempo_actual)
-    )
-    if tiempo_pos_sel != st.session_state.pos_tiempo_actual:
-        st.session_state.pos_tiempo_actual = tiempo_pos_sel
-        st.session_state.pos_estado_actual = "Pausa"
-        st.session_state.pos_ultimo_click = None
-        st.rerun()
+    else:
+        # Lógica original del Reloj 
+        
+        for key_pos in ["pos_1t_propio", "pos_1t_rival", "pos_2t_propio", "pos_2t_rival"]:
+            if key_pos not in st.session_state:
+                st.session_state[key_pos] = 0.0
+        if "pos_estado_actual" not in st.session_state:
+            st.session_state.pos_estado_actual = "Pausa"
+        if "pos_ultimo_click" not in st.session_state:
+            st.session_state.pos_ultimo_click = None
+        if "pos_tiempo_actual" not in st.session_state:
+            st.session_state.pos_tiempo_actual = "1T"
 
-    clave_propio = f"pos_{st.session_state.pos_tiempo_actual.lower()}_propio"
-    clave_rival = f"pos_{st.session_state.pos_tiempo_actual.lower()}_rival"
-
-    ahora = time.time()
-    if st.session_state.pos_estado_actual != "Pausa" and st.session_state.pos_ultimo_click is not None:
-        transcurrido = ahora - st.session_state.pos_ultimo_click
-        if st.session_state.pos_estado_actual == "Nosotros":
-            st.session_state[clave_propio] += transcurrido
-        elif st.session_state.pos_estado_actual == "Rival":
-            st.session_state[clave_rival] += transcurrido
-        st.session_state.pos_ultimo_click = ahora
-
-    _renderizar_reloj_visual(
-        st.session_state[clave_propio],
-        st.session_state[clave_rival],
-        st.session_state.pos_estado_actual
-    )
-
-    c_pos1, c_pos2, c_pos3, c_pos4 = st.columns([1.2, 1.2, 1.2, 1])
-
-    with c_pos1:
-        tipo_boton_nos = "primary" if st.session_state.pos_estado_actual == "Nosotros" else "secondary"
-        if st.button("🟢 NUESTRA POSESIÓN", use_container_width=True, type=tipo_boton_nos):
-            st.session_state.pos_estado_actual = "Nosotros"
-            st.session_state.pos_ultimo_click = time.time()
-            st.rerun()
-
-    with c_pos2:
-        tipo_boton_rival = "primary" if st.session_state.pos_estado_actual == "Rival" else "secondary"
-        if st.button("🔴 POSESIÓN RIVAL", use_container_width=True, type=tipo_boton_rival):
-            st.session_state.pos_estado_actual = "Rival"
-            st.session_state.pos_ultimo_click = time.time()
-            st.rerun()
-
-    with c_pos3:
-        tipo_boton_pausa = "primary" if st.session_state.pos_estado_actual == "Pausa" else "secondary"
-        if st.button("⏸️ PAUSAR RELOJ", use_container_width=True, type=tipo_boton_pausa):
+        tiempo_pos_sel = st.radio(
+            "Tiempo actual de posesión", ["1T", "2T"],
+            horizontal=True, key="pos_tiempo_widget",
+            index=["1T", "2T"].index(st.session_state.pos_tiempo_actual)
+        )
+        if tiempo_pos_sel != st.session_state.pos_tiempo_actual:
+            st.session_state.pos_tiempo_actual = tiempo_pos_sel
             st.session_state.pos_estado_actual = "Pausa"
             st.session_state.pos_ultimo_click = None
             st.rerun()
 
-    with c_pos4:
-        if st.button("🔄 RESET", use_container_width=True, help="Reiniciar cronómetros de este tiempo a cero"):
-            st.session_state[clave_propio] = 0.0
-            st.session_state[clave_rival] = 0.0
-            st.session_state.pos_estado_actual = "Pausa"
-            st.session_state.pos_ultimo_click = None
-            st.rerun()
+        clave_propio = f"pos_{st.session_state.pos_tiempo_actual.lower()}_propio"
+        clave_rival = f"pos_{st.session_state.pos_tiempo_actual.lower()}_rival"
 
-    total_tiempo_neto = st.session_state[clave_propio] + st.session_state[clave_rival]
-    pct_nuestro = (st.session_state[clave_propio] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
-    pct_rival = (st.session_state[clave_rival] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+        ahora = time.time()
+        if st.session_state.pos_estado_actual != "Pausa" and st.session_state.pos_ultimo_click is not None:
+            transcurrido = ahora - st.session_state.pos_ultimo_click
+            if st.session_state.pos_estado_actual == "Nosotros":
+                st.session_state[clave_propio] += transcurrido
+            elif st.session_state.pos_estado_actual == "Rival":
+                st.session_state[clave_rival] += transcurrido
+            st.session_state.pos_ultimo_click = ahora
 
-    col_res1, col_res2, col_res3 = st.columns(3)
-    with col_res1:
-        st.metric(f"⏱️ Nuestra Posesión ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_propio]), f"{pct_nuestro:.1f}%")
-    with col_res2:
-        estado_icon = "🟢" if st.session_state.pos_estado_actual == "Nosotros" else "🔴" if st.session_state.pos_estado_actual == "Rival" else "⏸️"
-        st.metric("Estado Reloj", f"{estado_icon} {st.session_state.pos_estado_actual.upper()}")
-    with col_res3:
-        st.metric(f"⏱️ Posesión Rival ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_rival]), f"{pct_rival:.1f}%", delta_color="inverse")
+        total_tiempo_neto = st.session_state[clave_propio] + st.session_state[clave_rival]
+        tiempo_restante_seg = max(0.0, DURACION_TIEMPO_SEG - total_tiempo_neto)
 
-    if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
-        if not rival:
-            st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
-        else:
-            guardar_posesion_partido(
-                conn, fecha, rival, equipo_propio, lugar, lado_inicio,
-                st.session_state["pos_1t_propio"], st.session_state["pos_1t_rival"],
-                st.session_state["pos_2t_propio"], st.session_state["pos_2t_rival"]
-            )
-            st.success("✅ Datos del partido y posesión guardados en la base de datos.")
+        _renderizar_reloj_visual(
+            st.session_state[clave_propio],
+            st.session_state[clave_rival],
+            st.session_state.pos_estado_actual,
+            tiempo_restante_seg
+        )
 
-    st.divider()
+        c_pos1, c_pos2, c_spacer, c_pos3, c_pos4 = st.columns([1, 1, 1.4, 1, 1])
+
+        with c_pos1:
+            tipo_boton_nos = "primary" if st.session_state.pos_estado_actual == "Nosotros" else "secondary"
+            if st.button("🟢 NUESTRA POSESIÓN", use_container_width=True, type=tipo_boton_nos):
+                st.session_state.pos_estado_actual = "Nosotros"
+                st.session_state.pos_ultimo_click = time.time()
+                st.rerun()
+
+        with c_pos2:
+            tipo_boton_rival = "primary" if st.session_state.pos_estado_actual == "Rival" else "secondary"
+            if st.button("🔴 POSESIÓN RIVAL", use_container_width=True, type=tipo_boton_rival):
+                st.session_state.pos_estado_actual = "Rival"
+                st.session_state.pos_ultimo_click = time.time()
+                st.rerun()
+
+        with c_pos3:
+            tipo_boton_pausa = "primary" if st.session_state.pos_estado_actual == "Pausa" else "secondary"
+            if st.button("⏸️ PAUSAR RELOJ", use_container_width=True, type=tipo_boton_pausa):
+                st.session_state.pos_estado_actual = "Pausa"
+                st.session_state.pos_ultimo_click = None
+                st.rerun()
+
+        with c_pos4:
+            if st.button("🔄 RESET", use_container_width=True, help="Reiniciar cronómetros de este tiempo a cero"):
+                st.session_state[clave_propio] = 0.0
+                st.session_state[clave_rival] = 0.0
+                st.session_state.pos_estado_actual = "Pausa"
+                st.session_state.pos_ultimo_click = None
+                st.rerun()
+
+        pct_nuestro = (st.session_state[clave_propio] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+        pct_rival = (st.session_state[clave_rival] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
+
+        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+        with col_res1:
+            st.metric(f"⏱️ Nuestra Posesión ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_propio]), f"{pct_nuestro:.1f}%")
+        with col_res2:
+            estado_icon = "🟢" if st.session_state.pos_estado_actual == "Nosotros" else "🔴" if st.session_state.pos_estado_actual == "Rival" else "⏸️"
+            st.metric("Estado Reloj", f"{estado_icon} {st.session_state.pos_estado_actual.upper()}")
+        with col_res3:
+            st.metric(f"⏱️ Posesión Rival ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_rival]), f"{pct_rival:.1f}%", delta_color="inverse")
+        with col_res4:
+            st.metric(f"⏳ Tiempo Restante ({st.session_state.pos_tiempo_actual})", formatear_tiempo(tiempo_restante_seg))
+            if tiempo_restante_seg <= 0:
+                st.caption("⏰ Tiempo cumplido")
+
+        if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
+            if not rival:
+                st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
+            else:
+                # Determinamos los valores de posesión dependiendo del modo activo
+                # Si el checkbox 'modo_manual_check' está activo, usamos los valores calculados en session_state
+                # Si no, usamos los contadores del cronómetro (las llaves 'pos_1t_propio', etc.)
+                if st.session_state.get("modo_manual_check", False):
+                    t1_propio = st.session_state["pos_1t_propio"]
+                    t1_rival = st.session_state["pos_1t_rival"]
+                    t2_propio = st.session_state["pos_2t_propio"]
+                    t2_rival = st.session_state["pos_2t_rival"]
+                else:
+                    t1_propio = st.session_state["pos_1t_propio"]
+                    t1_rival = st.session_state["pos_1t_rival"]
+                    t2_propio = st.session_state["pos_2t_propio"]
+                    t2_rival = st.session_state["pos_2t_rival"]
+
+                # Llamada a tu función de guardado existente
+                guardar_posesion_partido(
+                    conn, fecha, rival, equipo_propio, lugar, lado_inicio,
+                    t1_propio, t1_rival,
+                    t2_propio, t2_rival
+                )
+                st.success("✅ Datos del partido y posesión guardados en la base de datos.")
+
+        st.divider()
 
     st.subheader("⚡ Carga rápida de eventos (clic en la cancha)")
 
@@ -887,9 +999,18 @@ def render_carga_datos(conn):
 
         fig_cancha = crear_figura_cancha()
 
+        # Contador para forzar un remount completo del gráfico después de cada evento
+        # registrado. Cambiar la 'key' obliga a Streamlit a destruir el componente viejo
+        # (que en el navegador podía retener visualmente el clic anterior) y crear uno
+        # 100% nuevo sin selección — a diferencia de borrar el session_state del mismo
+        # key, que dejaba el componente del navegador "vivo" y repitiendo el último clic.
+        if "click_cancha_reset_counter" not in st.session_state:
+            st.session_state["click_cancha_reset_counter"] = 0
+
         evento_click = st.plotly_chart(
             fig_cancha, use_container_width=False,
-            on_select="rerun", selection_mode="points", key="click_cancha"            
+            on_select="rerun", selection_mode="points",
+            key=f"click_cancha_{st.session_state['click_cancha_reset_counter']}"
         )
 
         x_click, y_click = extraer_punto_click(evento_click)
@@ -925,6 +1046,11 @@ def render_carga_datos(conn):
                 st.session_state["ultimo_click_registrado"] = click_id
                 mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
                 st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
+
+                # Incrementamos el contador para que el próximo render use una key nueva
+                # (nuevo componente, sin ninguna selección previa).
+                st.session_state["click_cancha_reset_counter"] += 1
+
                 st.rerun()
         else:
             st.caption("📍 Esperando clic posicional...")
@@ -987,18 +1113,21 @@ def render_dashboard_general(conn):
 
     # --- INDICADORES ---
     st.divider()
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         st.metric("Acciones Filtradas", len(df_filtrado))
     with col2:
+        total_finalizaciones = len(df_filtrado[df_filtrado["tipo_evento"] == "Finalizaciones"])
+        st.metric("Cantidad de Finalizaciones", total_finalizaciones)
+    with col3:
         # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
         tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado"]))])
         st.metric("Goles/Tiros al Arco", tiros_efectivos)
-    with col3:
-        st.metric("Balones Perdidos", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
     with col4:
-        st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
+        st.metric("Balones Perdidos", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
     with col5:
+        st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
+    with col6:
         st.metric("ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]))
 
     # --- TENENCIA DE LA PELOTA ---
@@ -1242,19 +1371,22 @@ def render_rendimiento_individual(conn):
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     
     with m1:
         total_acciones = len(df_jugador_filtrado)
         st.metric("Total Acciones", total_acciones)
     with m2:
+        total_finalizaciones_j = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Finalizaciones"])
+        st.metric("Cantidad de Finalizaciones", total_finalizaciones_j)
+    with m3:
         # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
         goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado"]))])
         st.metric("Tiros al Arco", goles_tiros)
-    with m3:
+    with m4:
         recuperos = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"])
         st.metric("Recuperaciones", recuperos)
-    with m4:
+    with m5:
         perdidas = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"])
         st.metric("Pérdidas de Balón", perdidas)
 
@@ -1350,9 +1482,9 @@ def render_jugadores(conn, rol_actual):
             st.caption(f"{len(df_vista)} jugador/es en el plantel")
             st.divider()
 
-            columnas = st.columns(4)
+            columnas = st.columns(5)
             for i, (_, jug) in enumerate(df_vista.iterrows()):
-                with columnas[i % 4]:
+                with columnas[i % 5]:
                     with st.container(border=True):
                         if jug["foto_path"] and os.path.exists(jug["foto_path"]):
                             st.image(jug["foto_path"], use_container_width=True)
@@ -1370,35 +1502,35 @@ def render_jugadores(conn, rol_actual):
     if puede_editar:
         with tabs[1]:
             st.subheader("Nueva ficha de jugador")
-            with st.form("form_nuevo_jugador", clear_on_submit=True):
+            with st.form("form_nuevo_jugador", clear_on_submit=False):
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    nombre = st.text_input("Nombre*")
-                    dni = st.text_input("DNI*")
-                    comet = st.text_input("Número de COMET")
+                    nombre = st.text_input("Nombre*", key="nuevo_jug_nombre")
+                    dni = st.text_input("DNI*", key="nuevo_jug_dni")
+                    comet = st.text_input("Número de COMET", key="nuevo_jug_comet")
                 with c2:
-                    apellido = st.text_input("Apellido*")
-                    fecha_nac = st.date_input("Fecha de nacimiento", min_value=date(1970, 1, 1), max_value=date.today())
-                    numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1)
+                    apellido = st.text_input("Apellido*", key="nuevo_jug_apellido")
+                    fecha_nac = st.date_input("Fecha de nacimiento", min_value=date(1970, 1, 1), max_value=date.today(), key="nuevo_jug_fecha_nac")
+                    numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1, key="nuevo_jug_numero")
                 with c3:
-                    posicion = st.selectbox("Posición", POSICIONES)
-                    pie_habil = st.selectbox("Pie hábil", PIES)
-                    estado = st.selectbox("Estado", ESTADOS)
+                    posicion = st.selectbox("Posición", POSICIONES, key="nuevo_jug_posicion")
+                    pie_habil = st.selectbox("Pie hábil", PIES, key="nuevo_jug_pie")
+                    estado = st.selectbox("Estado", ESTADOS, key="nuevo_jug_estado")
 
                 st.markdown("**Datos de contacto y salud**")
                 c4, c5, c6 = st.columns(3)
                 with c4:
-                    telefono = st.text_input("Teléfono")
-                    direccion = st.text_input("Dirección")
+                    telefono = st.text_input("Teléfono", key="nuevo_jug_telefono")
+                    direccion = st.text_input("Dirección", key="nuevo_jug_direccion")
                 with c5:
-                    grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS)
-                    obra_social = st.text_input("Obra social")
+                    grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, key="nuevo_jug_grupo")
+                    obra_social = st.text_input("Obra social", key="nuevo_jug_obra_social")
                 with c6:
-                    contacto_emerg_nombre = st.text_input("Contacto de emergencia")
-                    contacto_emerg_tel = st.text_input("Teléfono de emergencia")
+                    contacto_emerg_nombre = st.text_input("Contacto de emergencia", key="nuevo_jug_contacto_nombre")
+                    contacto_emerg_tel = st.text_input("Teléfono de emergencia", key="nuevo_jug_contacto_tel")
 
-                observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)")
-                foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"])
+                observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)", key="nuevo_jug_observaciones")
+                foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"], key="nuevo_jug_foto")
 
                 enviado = st.form_submit_button("💾 Guardar jugador", type="primary", use_container_width=True)
 
@@ -1406,7 +1538,7 @@ def render_jugadores(conn, rol_actual):
                     if not nombre or not apellido or not dni:
                         st.warning("⚠️ Nombre, Apellido y DNI son obligatorios.")
                     elif dni_ya_existe(conn, dni):
-                        st.error("❌ Ya existe un jugador cargado con ese DNI.")
+                        st.error("❌ Ya existe un jugador cargado con ese DNI. Corregilo abajo y volvé a guardar — el resto de los datos que cargaste se mantiene.")
                     else:
                         foto_path = guardar_foto_jugador(foto, dni)
                         insertar_jugador(conn, {
@@ -1419,6 +1551,19 @@ def render_jugadores(conn, rol_actual):
                             "foto_path": foto_path, "observaciones": observaciones,
                         })
                         st.success(f"✅ {nombre} {apellido} agregado al plantel.")
+
+                        # Recién ahora, con el guardado confirmado, limpiamos el formulario a mano
+                        # (clear_on_submit está apagado a propósito para no perder datos si el
+                        # DNI viene duplicado u otra validación falla).
+                        for campo_key in [
+                            "nuevo_jug_nombre", "nuevo_jug_dni", "nuevo_jug_comet", "nuevo_jug_apellido",
+                            "nuevo_jug_fecha_nac", "nuevo_jug_numero", "nuevo_jug_posicion", "nuevo_jug_pie",
+                            "nuevo_jug_estado", "nuevo_jug_telefono", "nuevo_jug_direccion", "nuevo_jug_grupo",
+                            "nuevo_jug_obra_social", "nuevo_jug_contacto_nombre", "nuevo_jug_contacto_tel",
+                            "nuevo_jug_observaciones", "nuevo_jug_foto",
+                        ]:
+                            if campo_key in st.session_state:
+                                del st.session_state[campo_key]
                         st.rerun()
 
     # -----------------------------------------------------
