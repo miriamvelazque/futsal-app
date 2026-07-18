@@ -666,13 +666,18 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
         if not df_cancha.empty:
             matriz, x_centros, y_centros = _matriz_densidad(df_cancha["x"].values, df_cancha["y"].values)
             max_val = np.max(matriz) if np.max(matriz) > 0 else 1
+            umbral = max_val * 0.05
 
-            # Puntos más chicos y sin borde, para no tapar el degradé de calor
+            # Enmascaramos las celdas de baja/nula densidad con NaN para que Plotly las
+            # deje transparentes, y así se vea la cancha (blanca/gris/negra) de fondo en
+            # vez de un tinte de color cubriendo toda la grilla.
+            matriz_visible = np.where(matriz >= umbral, matriz, np.nan)
+
             fig.add_trace(go.Heatmap(
-                x=x_centros, y=y_centros, z=matriz,
-                colorscale="YlOrRd", opacity=0.90, showscale=True,
+                x=x_centros, y=y_centros, z=matriz_visible,
+                colorscale="YlOrRd", opacity=0.85, showscale=True,
                 zsmooth="best", hoverinfo="skip", name="Densidad Táctica",
-                zmin=max_val * 0.05, zmax=max_val
+                zmin=umbral, zmax=max_val
             ))
 
             # Capa superior: un trace por tipo de evento, coloreado igual que el gráfico de barras
@@ -913,33 +918,32 @@ def render_carga_datos(conn):
             if tiempo_restante_seg <= 0:
                 st.caption("⏰ Tiempo cumplido")
 
-        if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
-            if not rival:
-                st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
-            else:
-                # Determinamos los valores de posesión dependiendo del modo activo
-                # Si el checkbox 'modo_manual_check' está activo, usamos los valores calculados en session_state
-                # Si no, usamos los contadores del cronómetro (las llaves 'pos_1t_propio', etc.)
-                if st.session_state.get("modo_manual_check", False):
-                    t1_propio = st.session_state["pos_1t_propio"]
-                    t1_rival = st.session_state["pos_1t_rival"]
-                    t2_propio = st.session_state["pos_2t_propio"]
-                    t2_rival = st.session_state["pos_2t_rival"]
-                else:
-                    t1_propio = st.session_state["pos_1t_propio"]
-                    t1_rival = st.session_state["pos_1t_rival"]
-                    t2_propio = st.session_state["pos_2t_propio"]
-                    t2_rival = st.session_state["pos_2t_rival"]
+    # ---------------------------------------------------------------
+    # BOTÓN GUARDAR: compartido por los dos modos (manual y reloj).
+    # Antes vivía adentro del 'else' del reloj, por eso no aparecía
+    # nunca cuando se activaba la carga manual de posesión.
+    # ---------------------------------------------------------------
+    if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
+        if not rival:
+            st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
+        elif "pos_1t_propio" not in st.session_state:
+            st.warning("⚠️ Todavía no hay datos de posesión cargados (ni manual ni por cronómetro).")
+        else:
+            # Tanto el modo manual como el reloj dejan sus valores finales en las mismas
+            # claves de session_state ('pos_1t_propio', etc.), así que el guardado es único.
+            t1_propio = st.session_state["pos_1t_propio"]
+            t1_rival = st.session_state["pos_1t_rival"]
+            t2_propio = st.session_state["pos_2t_propio"]
+            t2_rival = st.session_state["pos_2t_rival"]
 
-                # Llamada a tu función de guardado existente
-                guardar_posesion_partido(
-                    conn, fecha, rival, equipo_propio, lugar, lado_inicio,
-                    t1_propio, t1_rival,
-                    t2_propio, t2_rival
-                )
-                st.success("✅ Datos del partido y posesión guardados en la base de datos.")
+            guardar_posesion_partido(
+                conn, fecha, rival, equipo_propio, lugar, lado_inicio,
+                t1_propio, t1_rival,
+                t2_propio, t2_rival
+            )
+            st.success("✅ Datos del partido y posesión guardados en la base de datos.")
 
-        st.divider()
+    st.divider()
 
     st.subheader("⚡ Carga rápida de eventos (clic en la cancha)")
 
@@ -951,10 +955,13 @@ def render_carga_datos(conn):
             key="tipo_evento_rapido"
         )
     with col2:
-        jugador = st.text_input(
-            "Número de jugador", key="jugador_rapido",
+        opciones_jugador = [""] + [str(n) for n in range(1, 100)]
+        jugador = st.selectbox(
+            "Número de jugador", opciones_jugador,
+            key="jugador_rapido",
             disabled=(tipo_evento == "ABP"),
-            help="No aplica para ABP" if tipo_evento == "ABP" else None
+            help="No aplica para ABP" if tipo_evento == "ABP" else None,
+            format_func=lambda v: "Seleccionar..." if v == "" else v
         )
     with col3:
         tiempo = st.selectbox("Tiempo", ["1T", "2T"], key="tiempo_rapido")
@@ -1325,7 +1332,7 @@ def render_rendimiento_individual(conn):
 
     # --- PANEL DE FILTROS INDIVIDUALES ---
     st.markdown("### 🔍 Filtros de Jugador")
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
     
     with col_f1:
        equipos_disponibles = sorted(df_eventos["equipo"].dropna().unique())
@@ -1334,7 +1341,11 @@ def render_rendimiento_individual(conn):
     df_base_equipo = df_eventos[df_eventos["equipo"] == equipo_sel]
     
     with col_f2:
-       jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique())
+       # Orden numérico (1, 2, 3...99) en vez de alfabético (1, 10, 2, 3...)
+       jugadores_disponibles = sorted(
+           df_base_equipo["jugador"].dropna().unique(),
+           key=lambda v: (0, int(v)) if str(v).isdigit() else (1, str(v))
+       )
        jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
 
     df_base_jugador = df_base_equipo[df_base_equipo["jugador"] == jugador_sel]
@@ -1347,11 +1358,17 @@ def render_rendimiento_individual(conn):
         tiempos_disponibles = ["Todos"] + list(df_base_jugador["tiempo"].dropna().unique())
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles, key="rend_tiempo_sel")
 
+    with col_f5:
+        tipos_evento_disponibles = ["Todos"] + sorted(df_base_jugador["tipo_evento"].dropna().unique())
+        tipo_evento_sel = st.selectbox("Filtrar por Tipo de Acción", tipos_evento_disponibles, key="rend_tipo_evento_sel")
+
     df_jugador_filtrado = df_base_jugador.copy()
     if partido_sel != "Todos":
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["partido"] == partido_sel]
     if tiempo_sel != "Todos":
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tiempo"] == tiempo_sel]
+    if tipo_evento_sel != "Todos":
+        df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == tipo_evento_sel]
 
    # --- MINI FICHA DEL JUGADOR (solo si es de nuestro plantel registrado) ---
     if equipo_sel == "Propio":
@@ -1650,6 +1667,19 @@ def render_jugadores(conn, rol_actual):
 def main():
     conn = get_connection()
     init_db(conn)
+
+    # CSS global: pestañas con más presencia visual (texto más grande y en negrita)
+    st.markdown("""
+    <style>
+    button[data-baseweb="tab"] {
+        padding: 14px 22px !important;
+    }
+    button[data-baseweb="tab"] p {
+        font-size: 20px !important;
+        font-weight: 700 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     # ⭐ CORRECCIÓN SEGURIDAD: Inicializar estado antes del chequeo para evitar renderizado huérfano
     if "usuario_logueado" not in st.session_state:
