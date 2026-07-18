@@ -272,6 +272,38 @@ def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inic
     conn.commit()
 
 
+def formatear_tiempo(segundos_totales):
+    """Convierte segundos a formato MM:SS. Usado en Carga de Datos y en Dashboard General."""
+    minutos = int(segundos_totales) // 60
+    segundos = int(segundos_totales) % 60
+    return f"{minutos:02d}:{segundos:02d}"
+
+
+def calcular_tenencia_partido(df_partidos, partido_sel="Todos", tiempo_sel="Todos"):
+    """Suma los segundos de posesión propia/rival desde la tabla partidos,
+    respetando los filtros de Partido y Tiempo de juego del Dashboard General."""
+    if df_partidos is None or df_partidos.empty:
+        return 0.0, 0.0
+
+    dfp = df_partidos.copy()
+    dfp["partido"] = dfp["fecha"].astype(str) + " - " + dfp["rival"].astype(str)
+    if partido_sel != "Todos":
+        dfp = dfp[dfp["partido"] == partido_sel]
+    if dfp.empty:
+        return 0.0, 0.0
+
+    if tiempo_sel == "1T":
+        propio = dfp["posesion_1t_propio_seg"].fillna(0).sum()
+        rival = dfp["posesion_1t_rival_seg"].fillna(0).sum()
+    elif tiempo_sel == "2T":
+        propio = dfp["posesion_2t_propio_seg"].fillna(0).sum()
+        rival = dfp["posesion_2t_rival_seg"].fillna(0).sum()
+    else:
+        propio = dfp[["posesion_1t_propio_seg", "posesion_2t_propio_seg"]].fillna(0).sum().sum()
+        rival = dfp[["posesion_1t_rival_seg", "posesion_2t_rival_seg"]].fillna(0).sum().sum()
+
+    return propio, rival
+
 def resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_seleccionado):
     """Si el jugador ya tiene una amarilla cargada en este partido y se carga otra amarilla,
     la convierte automáticamente en 'Roja (2da Amarilla)', distinta de una roja directa."""
@@ -687,11 +719,6 @@ def render_carga_datos(conn):
             st.session_state[clave_rival] += transcurrido
         st.session_state.pos_ultimo_click = ahora
 
-    def formatear_tiempo(segundos_totales):
-        minutos = int(segundos_totales) // 60
-        segundos = int(segundos_totales) % 60
-        return f"{minutos:02d}:{segundos:02d}"
-
     _renderizar_reloj_visual(
         st.session_state[clave_propio],
         st.session_state[clave_rival],
@@ -759,67 +786,102 @@ def render_carga_datos(conn):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        tipo_evento = st.selectbox("Tipo de evento", ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "Tarjetas"], key="tipo_evento_rapido")
+        tipo_evento = st.selectbox(
+            "Tipo de evento",
+            ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "Tarjetas", "ABP"],
+            key="tipo_evento_rapido"
+        )
     with col2:
-        jugador = st.text_input("Número de jugador", key="jugador_rapido")
+        jugador = st.text_input(
+            "Número de jugador", key="jugador_rapido",
+            disabled=(tipo_evento == "ABP"),
+            help="No aplica para ABP" if tipo_evento == "ABP" else None
+        )
     with col3:
         tiempo = st.selectbox("Tiempo", ["1T", "2T"], key="tiempo_rapido")
     with col4:
         equipo = st.selectbox("Equipo", ["Propio", "Rival"], key="equipo_rapido")
 
     resultado, tipo_tarjeta_sel = "", ""
+    tipo_abp_sel, lado_abp_sel = "", ""
+
     if tipo_evento == "Finalizaciones":
         resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
     elif tipo_evento == "Faltas":
         tipo_tarjeta_sel = st.selectbox("Tarjeta asociada a la falta", ["Sin tarjeta", "Amarilla", "Roja"], key="tipo_tarjeta_falta")
     elif tipo_evento == "Tarjetas":
         tipo_tarjeta_sel = st.selectbox("Tipo de tarjeta", ["Amarilla", "Roja"], key="tipo_tarjeta_rapido")
+    elif tipo_evento == "ABP":
+        col_abp1, col_abp2 = st.columns(2)
+        with col_abp1:
+            tipo_abp_sel = st.selectbox("Tipo de ABP", ["Córner", "Tiro Libre", "Lateral"], key="tipo_abp_rapido")
+        with col_abp2:
+            lado_abp_sel = st.selectbox("Lado", ["Derecho", "Izquierdo"], key="lado_abp_rapido")
 
-    st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en la cancha táctica. El sistema procesará automáticamente el lado de ataque actual según tu configuración de sorteo.")
-
-    fig_cancha = crear_figura_cancha()
-
-    evento_click = st.plotly_chart(
-        fig_cancha, use_container_width=True,
-        on_select="rerun", selection_mode="points", key="click_cancha"
-    )
-
-    x_click, y_click = extraer_punto_click(evento_click)
-
-    if x_click is not None and y_click is not None:
-        click_id = (x_click, y_click, tipo_evento, jugador, tiempo, equipo)
-
-        if not jugador:
-            st.warning("⚠️ Ingresá el número de jugador antes de hacer clic en la cancha")
-        elif st.session_state.get("ultimo_click_registrado") != click_id:
-
-            es_1t_y_ataca_izquierda = (tiempo == "1T" and "Izquierda" in lado_inicio)
-            es_2t_y_ataca_izquierda = (tiempo == "2T" and "Derecha" in lado_inicio)
-
-            if es_1t_y_ataca_izquierda or es_2t_y_ataca_izquierda:
-                zona = "Ofensiva" if x_click < 50 else "Defensiva"
-                x_guardar = 100 - x_click
-                y_guardar = 60 - y_click
-            else:
-                zona = "Defensiva" if x_click < 50 else "Ofensiva"
-                x_guardar = x_click
-                y_guardar = y_click
-
-            tipo_tarjeta_final = ""
-            if tipo_evento in ("Faltas", "Tarjetas") and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
-                tipo_tarjeta_final = resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sel)
-
+    # -----------------------------------------------------
+    # ABP: registro directo por botón (no requiere clic en cancha ni jugador)
+    # -----------------------------------------------------
+    if tipo_evento == "ABP":
+        st.info("🚩 Los ABP se registran directo con el botón — no hace falta clic en la cancha ni número de jugador.")
+        if st.button("➕ Registrar ABP", type="primary", use_container_width=True):
             insertar_evento_individual(
-                conn, fecha, rival, tipo_evento, tiempo, equipo,
-                jugador, zona, resultado, tipo_tarjeta_final, x=x_guardar, y=y_guardar
+                conn, fecha, rival, "ABP", tiempo, equipo,
+                jugador="", zona=lado_abp_sel, resultado=tipo_abp_sel,
+                tipo_tarjeta="", x=None, y=None
             )
-
-            st.session_state["ultimo_click_registrado"] = click_id
-            mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
-            st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
+            st.success(f"✅ ABP registrado: {tipo_abp_sel} ({lado_abp_sel}) - {equipo} - {tiempo}")
             st.rerun()
+
+    # -----------------------------------------------------
+    # Resto de eventos: flujo normal de clic en cancha
+    # -----------------------------------------------------
     else:
-        st.caption("📍 Esperando clic posicional...")
+        st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en la cancha táctica. El sistema procesará automáticamente el lado de ataque actual según tu configuración de sorteo.")
+
+        fig_cancha = crear_figura_cancha()
+
+        evento_click = st.plotly_chart(
+            fig_cancha, use_container_width=True,
+            on_select="rerun", selection_mode="points", key="click_cancha",
+            config={"responsive": True, "displaylogo": False}
+        )
+
+        x_click, y_click = extraer_punto_click(evento_click)
+
+        if x_click is not None and y_click is not None:
+            click_id = (x_click, y_click, tipo_evento, jugador, tiempo, equipo)
+
+            if not jugador:
+                st.warning("⚠️ Ingresá el número de jugador antes de hacer clic en la cancha")
+            elif st.session_state.get("ultimo_click_registrado") != click_id:
+
+                es_1t_y_ataca_izquierda = (tiempo == "1T" and "Izquierda" in lado_inicio)
+                es_2t_y_ataca_izquierda = (tiempo == "2T" and "Derecha" in lado_inicio)
+
+                if es_1t_y_ataca_izquierda or es_2t_y_ataca_izquierda:
+                    zona = "Ofensiva" if x_click < 50 else "Defensiva"
+                    x_guardar = 100 - x_click
+                    y_guardar = 60 - y_click
+                else:
+                    zona = "Defensiva" if x_click < 50 else "Ofensiva"
+                    x_guardar = x_click
+                    y_guardar = y_click
+
+                tipo_tarjeta_final = ""
+                if tipo_evento in ("Faltas", "Tarjetas") and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
+                    tipo_tarjeta_final = resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sel)
+
+                insertar_evento_individual(
+                    conn, fecha, rival, tipo_evento, tiempo, equipo,
+                    jugador, zona, resultado, tipo_tarjeta_final, x=x_guardar, y=y_guardar
+                )
+
+                st.session_state["ultimo_click_registrado"] = click_id
+                mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
+                st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
+                st.rerun()
+        else:
+            st.caption("📍 Esperando clic posicional...")
 
     st.divider()
 
@@ -847,7 +909,7 @@ def render_dashboard_general(conn):
 
     # --- BARRA DE FILTROS SUPERIOR ---
     st.markdown("### 🔍 Filtros Globales")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         partidos_disponibles = ["Todos"] + sorted(list(df_eventos["partido"].dropna().unique()), reverse=True)
         partido_sel = st.selectbox("Filtrar por Partido (Fecha - Rival)", partidos_disponibles)
@@ -860,6 +922,9 @@ def render_dashboard_general(conn):
     with c4:
         equipos_disponibles = ["Todos"] + sorted(list(df_eventos["equipo"].dropna().unique()))
         equipo_sel = st.selectbox("Filtrar por Equipo", equipos_disponibles)
+    with c5:
+        tiempos_disponibles = ["Todos"] + sorted(list(df_eventos["tiempo"].dropna().unique()))
+        tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles)
 
     # Filtros cruzados
     df_filtrado = df_eventos.copy()
@@ -870,11 +935,13 @@ def render_dashboard_general(conn):
     if tipo_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["tipo_evento"] == tipo_sel]
     if equipo_sel != "Todos":
-       df_filtrado = df_filtrado[df_filtrado["equipo"] == equipo_sel]    
+       df_filtrado = df_filtrado[df_filtrado["equipo"] == equipo_sel]
+    if tiempo_sel != "Todos":
+       df_filtrado = df_filtrado[df_filtrado["tiempo"] == tiempo_sel]   
 
     # --- INDICADORES ---
     st.divider()
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Acciones Filtradas", len(df_filtrado))
     with col2:
@@ -885,6 +952,31 @@ def render_dashboard_general(conn):
         st.metric("Balones Perdidos", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
     with col4:
         st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
+    with col5:
+        st.metric("ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]))
+
+    # --- TENENCIA DE LA PELOTA ---
+    st.divider()
+    st.markdown("### ⚽ Tenencia de la Pelota")
+    df_partidos = cargar_partidos_df(conn)
+    segundos_propio, segundos_rival = calcular_tenencia_partido(df_partidos, partido_sel, tiempo_sel)
+    total_segundos = segundos_propio + segundos_rival
+
+    if total_segundos > 0:
+        col_pos_metric, col_pos_chart = st.columns([1, 1.5])
+        with col_pos_metric:
+            st.metric("Posesión Propia", formatear_tiempo(segundos_propio), f"{segundos_propio / total_segundos * 100:.1f}%")
+            st.metric("Posesión Rival", formatear_tiempo(segundos_rival), f"{segundos_rival / total_segundos * 100:.1f}%")
+        with col_pos_chart:
+            df_tenencia = pd.DataFrame({"Equipo": ["Propio", "Rival"], "Segundos": [segundos_propio, segundos_rival]})
+            fig_tenencia = px.pie(
+                df_tenencia, values="Segundos", names="Equipo", hole=0.5,
+                color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"}
+            )
+            fig_tenencia.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
+            st.plotly_chart(fig_tenencia, use_container_width=True, key="tenencia_pelota_chart")
+    else:
+        st.info("No hay datos de posesión cargados para este filtro. Cargalos desde el reloj de 'Control de Posesión' en Carga de Datos.")
 
     # --- DISEÑO TÁCTICO INTERACTIVO (Fila Superior) ---
     st.divider()
@@ -894,7 +986,7 @@ def render_dashboard_general(conn):
         st.subheader("📍 Mapa de Distribución y Calor de Futsal")
         txt_mapa = f"Filtro - Jugador: {jugador_sel} | Acción: {tipo_sel} | Equipo: {equipo_sel}"
         fig_heatmap = generar_heatmap_analisis(df_filtrado, titulo_mapa=txt_mapa)
-        st.plotly_chart(fig_heatmap, use_container_width=True)
+        st.plotly_chart(fig_heatmap, use_container_width=True, key="heatmap_dashboard_general", config={"responsive": True, "displaylogo": False})
 
     with col_der:
         st.subheader("📊 Distribución de Volumen Táctico")
@@ -967,6 +1059,80 @@ def render_dashboard_general(conn):
                 else:
                     st.info("No se registraron goles en los partidos seleccionados.")
 
+    # --- ANÁLISIS DE ABP ---
+    if not df_filtrado.empty:
+        df_abp = df_filtrado[df_filtrado["tipo_evento"] == "ABP"]
+        if not df_abp.empty:
+            st.divider()
+            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales)")
+            col_tipo_abp, col_lado_abp = st.columns(2)
+            with col_tipo_abp:
+                st.markdown("#### 📋 Por Tipo de ABP")
+                tipo_abp_counts = df_abp["resultado"].fillna("Sin especificar").value_counts().reset_index()
+                tipo_abp_counts.columns = ["Tipo de ABP", "Cantidad"]
+                fig_abp_tipo = px.bar(
+                    tipo_abp_counts, x="Tipo de ABP", y="Cantidad", color="Tipo de ABP",
+                    color_discrete_sequence=px.colors.qualitative.Pastel2
+                )
+                fig_abp_tipo.update_layout(height=280, margin=dict(t=20, b=20), showlegend=False)
+                st.plotly_chart(fig_abp_tipo, use_container_width=True, key="abp_por_tipo")
+            with col_lado_abp:
+                st.markdown("#### 📋 Por Lado")
+                lado_abp_counts = df_abp["zona"].fillna("Sin especificar").value_counts().reset_index()
+                lado_abp_counts.columns = ["Lado", "Cantidad"]
+                fig_abp_lado = px.pie(
+                    lado_abp_counts, values="Cantidad", names="Lado", hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Pastel1
+                )
+                fig_abp_lado.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
+                st.plotly_chart(fig_abp_lado, use_container_width=True, key="abp_por_lado")
+
+    # --- ANÁLISIS DE PÉRDIDAS Y RECUPEROS POR ZONA + TOP 3 ---
+    if not df_filtrado.empty:
+        for tipo_evento_analisis, emoji, color_seq in [
+            ("Perdidas", "🔴", px.colors.qualitative.Set2),
+            ("Recuperos", "🟢", px.colors.qualitative.Set3),
+        ]:
+            df_tipo = df_filtrado[df_filtrado["tipo_evento"] == tipo_evento_analisis]
+            if df_tipo.empty:
+                continue
+
+            st.divider()
+            st.markdown(f"### {emoji} Análisis de {tipo_evento_analisis}")
+
+            col_tabla_z, col_grafico_z, col_top3 = st.columns([1.1, 1.0, 1.1])
+
+            with col_tabla_z:
+                st.markdown("#### 📋 Desglose por Zona")
+                zona_counts = df_tipo["zona"].fillna("Sin especificar").value_counts().reset_index()
+                zona_counts.columns = ["Zona", "Cantidad"]
+                total_zona = zona_counts["Cantidad"].sum()
+                zona_counts["Porcentaje"] = ((zona_counts["Cantidad"] / total_zona) * 100).round(1).astype(str) + "%"
+                st.dataframe(zona_counts, use_container_width=True, hide_index=True)
+
+            with col_grafico_z:
+                fig_torta_zona = px.pie(
+                    zona_counts, values="Cantidad", names="Zona",
+                    color="Zona", color_discrete_sequence=color_seq, hole=0.4
+                )
+                fig_torta_zona.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                st.plotly_chart(fig_torta_zona, use_container_width=True, key=f"torta_zona_{tipo_evento_analisis}")
+
+            with col_top3:
+                st.markdown(f"#### 🏆 Top 3 Jugadores - {tipo_evento_analisis}")
+                top_jugadores = df_tipo["jugador"].value_counts().reset_index().head(3)
+                top_jugadores.columns = ["Jugador", "Cantidad"]
+                if not top_jugadores.empty:
+                    fig_top3 = px.bar(
+                        top_jugadores.sort_values("Cantidad"), x="Cantidad", y="Jugador",
+                        orientation="h", text="Cantidad",
+                        color_discrete_sequence=[color_seq[0]]
+                    )
+                    fig_top3.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                    fig_top3.update_traces(textposition="outside")
+                    st.plotly_chart(fig_top3, use_container_width=True, key=f"top3_{tipo_evento_analisis}")
+                else:
+                    st.info("Sin datos suficientes.")
 
 # =========================================================
 # PESTAÑA 3: RENDIMIENTO INDIVIDUAL
@@ -1055,7 +1221,7 @@ def render_rendimiento_individual(conn):
         st.subheader("📍 Mapa de Calor Propio")
         txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel} ({equipo_sel})"
         fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_filtrado, titulo_mapa=txt_mapa_indiv)
-        st.plotly_chart(fig_heatmap_indiv, use_container_width=True, key="heatmap_individual_chart")
+        st.plotly_chart(fig_heatmap_indiv, use_container_width=True, key="heatmap_individual_chart", config={"responsive": True, "displaylogo": False})
 
     with col_tabla:
         st.subheader("📋 Historial de Acciones")
