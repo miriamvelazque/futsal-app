@@ -462,17 +462,57 @@ def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual):
 CANCHA_ANCHO = 40  # metros real (eje X)
 CANCHA_ALTO = 20   # metros real (eje Y)
 
+# Equipos de la liga precargados para los selectores de "Equipo propio" / "Equipo rival"
+EQUIPOS_LIGA = [
+    "LOS TRONCOS", "CAMIONEROS", "ROSARIO", "HVJ",
+    "ADEFU", "DEFENSORES DEL SUR", "ESTRELLA AUSTRAL",
+]
+OPCION_OTRO_EQUIPO = "Otro (escribir manualmente)"
+DURACION_TIEMPO_SEG = 20 * 60  # Duración reglamentaria de cada tiempo (20 minutos)
+
+# Paleta compartida: los puntos del heatmap y las barras de "Distribución de Volumen Táctico"
+# usan exactamente los mismos colores por tipo de evento.
+COLORES_TIPO_EVENTO = {
+    "Finalizaciones": "#FF6B6B",
+    "Recuperos": "#4ECDC4",
+    "Perdidas": "#FFD166",
+    "Faltas": "#A78BFA",
+    "Tarjetas": "#F4A261",
+    "ABP": "#118AB2",
+}
+COLOR_TIPO_EVENTO_DEFAULT = "#9CA3AF"
+
+
+def color_por_tipo_evento(tipo_evento):
+    """Devuelve el color asignado a un tipo de evento, o un gris neutro si no está mapeado."""
+    return COLORES_TIPO_EVENTO.get(tipo_evento, COLOR_TIPO_EVENTO_DEFAULT)
+
+
+def selector_equipo_liga(etiqueta, key_prefix, indice_default=0):
+    """Selectbox con los equipos de la liga precargados + opción 'Otro' con texto libre.
+    Devuelve siempre el nombre del equipo en MAYÚSCULAS."""
+    opciones = EQUIPOS_LIGA + [OPCION_OTRO_EQUIPO]
+    seleccion = st.selectbox(etiqueta, opciones, index=indice_default, key=f"{key_prefix}_select")
+    if seleccion == OPCION_OTRO_EQUIPO:
+        nombre_manual = st.text_input(
+            f"{etiqueta} (nombre manual)", key=f"{key_prefix}_manual", placeholder="Ej: Nuevo Rival FC"
+        )
+        return nombre_manual.strip().upper()
+    return seleccion
+
 
 def dibujar_capas_cancha(fig):
-    """Agrega las formas reglamentarias de una cancha de Futsal oficial (40x20m) sin textos internos."""
-    fig.add_shape(type="rect", x0=0, y0=0, x1=40, y1=20, fillcolor="#4158f6", line=dict(color="white", width=2.5), layer="below")
-    fig.add_shape(type="path", path="M 0,4 Q 6,4 6,10 Q 6,16 0,16 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="path", path="M 40,4 Q 34,4 34,10 Q 34,16 40,16 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="circle", x0=17, y0=7, x1=23, y1=13, fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="line", x0=20, y0=0, x1=20, y1=20, line=dict(color="white", width=2.5))
-    fig.add_trace(go.Scatter(x=[6, 10, 34, 30], y=[10, 10, 10, 10], mode="markers", marker=dict(color="white", size=5), showlegend=False, hoverinfo="skip"))
-    fig.add_shape(type="rect", x0=-1.5, y0=8.5, x1=0, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
-    fig.add_shape(type="rect", x0=40, y0=8.5, x1=41.5, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
+    """Agrega las formas reglamentarias de una cancha de Futsal oficial (40x20m) sin textos internos.
+    Paleta clara (fondo blanco / áreas gris / líneas negras) — usada exclusivamente en los heatmaps
+    de Dashboard General y Rendimiento Individual."""
+    fig.add_shape(type="rect", x0=0, y0=0, x1=40, y1=20, fillcolor="#ffffff", line=dict(color="black", width=2.5), layer="below")
+    fig.add_shape(type="path", path="M 0,4 Q 6,4 6,10 Q 6,16 0,16 Z", fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
+    fig.add_shape(type="path", path="M 40,4 Q 34,4 34,10 Q 34,16 40,16 Z", fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
+    fig.add_shape(type="circle", x0=17, y0=7, x1=23, y1=13, fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
+    fig.add_shape(type="line", x0=20, y0=0, x1=20, y1=20, line=dict(color="black", width=2.5))
+    fig.add_trace(go.Scatter(x=[6, 10, 34, 30], y=[10, 10, 10, 10], mode="markers", marker=dict(color="black", size=5), showlegend=False, hoverinfo="skip"))
+    fig.add_shape(type="rect", x0=-1.5, y0=8.5, x1=0, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="black", width=2))
+    fig.add_shape(type="rect", x0=40, y0=8.5, x1=41.5, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="black", width=2))
 
 
 def crear_figura_cancha():
@@ -507,7 +547,7 @@ def crear_figura_cancha():
 
     fig.update_layout(
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        height=620, margin=dict(l=10, r=10, t=10, b=10),
+        width=980, height=590, margin=dict(l=10, r=10, t=10, b=10),
         modebar=dict(remove=["zoom", "pan", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"])
     )
     return fig
@@ -568,14 +608,16 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
                 zmin=max_val * 0.05, zmax=max_val
             ))
 
-            # Capa superior con todos los puntos exactos recuperados
-            fig.add_trace(go.Scatter(
-                x=df_cancha["x"], y=df_cancha["y"],
-                mode="markers",
-                marker=dict(color="black", size=5, opacity=0.5, line=dict(color="white", width=1.5)),
-                text=df_cancha["tipo_evento"].astype(str) + " - J" + df_cancha["jugador"].astype(str),
-                hoverinfo="text", name="Punto Exacto"
-            ))
+            # Capa superior: un trace por tipo de evento, coloreado igual que el gráfico de barras
+            for tipo_ev in sorted(df_cancha["tipo_evento"].dropna().unique()):
+                df_tipo_ev = df_cancha[df_cancha["tipo_evento"] == tipo_ev]
+                fig.add_trace(go.Scatter(
+                    x=df_tipo_ev["x"], y=df_tipo_ev["y"],
+                    mode="markers",
+                    marker=dict(color=color_por_tipo_evento(tipo_ev), size=7, opacity=0.85, line=dict(color="black", width=1)),
+                    text=df_tipo_ev["tipo_evento"].astype(str) + " - J" + df_tipo_ev["jugador"].astype(str),
+                    hoverinfo="text", name=tipo_ev, showlegend=True
+                ))
 
     dibujar_capas_cancha(fig)
 
@@ -584,9 +626,11 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
 
     fig.update_layout(
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        height=400, margin=dict(l=10, r=10, t=40, b=10),
+        width=800, height=400, margin=dict(l=10, r=10, t=40, b=10),
         title=dict(text=titulo_mapa, font=dict(size=15, color="white", family="Arial Black")),
-        showlegend=False
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                    font=dict(color="white", size=11), bgcolor="rgba(0,0,0,0)"),
+        showlegend=True
     )
     return fig
 
@@ -662,9 +706,9 @@ def render_carga_datos(conn):
     with col_p1:
         fecha = st.date_input("Fecha del partido", key="fecha_partido")
     with col_p2:
-        equipo_propio = st.text_input("Equipo propio", key="equipo_propio_partido", placeholder="Ej: Camioneros")
+        equipo_propio = selector_equipo_liga("Equipo propio", "equipo_propio_partido", indice_default=0)
     with col_p3:
-        rival = st.text_input("Equipo rival", key="rival_partido")
+        rival = selector_equipo_liga("Equipo rival", "rival_partido", indice_default=1)
 
     col_p4, col_p5 = st.columns(2)
     with col_p4:
@@ -677,7 +721,10 @@ def render_carga_datos(conn):
             key="lado_inicio_1t"
         )
     with col_p5:
-        lugar = st.text_input("Lugar / Gimnasio", key="lugar_partido", placeholder="Ej: Polideportivo Municipal")
+        lugar_input = st.text_input("Lugar / Gimnasio", key="lugar_partido", placeholder="Ej: Polideportivo Municipal")
+        lugar = lugar_input.strip().upper()
+        if lugar:
+            st.caption(f"Se guardará como: **{lugar}**")
 
     st.divider()
 
@@ -841,9 +888,8 @@ def render_carga_datos(conn):
         fig_cancha = crear_figura_cancha()
 
         evento_click = st.plotly_chart(
-            fig_cancha, use_container_width=True,
-            on_select="rerun", selection_mode="points", key="click_cancha",
-            config={"responsive": True, "displaylogo": False}
+            fig_cancha, use_container_width=False,
+            on_select="rerun", selection_mode="points", key="click_cancha"            
         )
 
         x_click, y_click = extraer_punto_click(evento_click)
@@ -986,7 +1032,7 @@ def render_dashboard_general(conn):
         st.subheader("📍 Mapa de Distribución y Calor de Futsal")
         txt_mapa = f"Filtro - Jugador: {jugador_sel} | Acción: {tipo_sel} | Equipo: {equipo_sel}"
         fig_heatmap = generar_heatmap_analisis(df_filtrado, titulo_mapa=txt_mapa)
-        st.plotly_chart(fig_heatmap, use_container_width=True, key="heatmap_dashboard_general", config={"responsive": True, "displaylogo": False})
+        st.plotly_chart(fig_heatmap, use_container_width=False, key="heatmap_dashboard_general")
 
     with col_der:
         st.subheader("📊 Distribución de Volumen Táctico")
@@ -996,7 +1042,7 @@ def render_dashboard_general(conn):
             fig_barras = px.bar(
                 counts, x="Cantidad", y="Tipo de Acción", 
                 orientation="h", color="Tipo de Acción",
-                color_discrete_sequence=px.colors.qualitative.Pastel
+                color_discrete_map=COLORES_TIPO_EVENTO
             )
             fig_barras.update_layout(showlegend=False, height=380, margin=dict(t=20, b=20))
             st.plotly_chart(fig_barras, use_container_width=True)
@@ -1040,7 +1086,7 @@ def render_dashboard_general(conn):
             with col_goleadores:
                 st.markdown("#### ⚽ Tabla de Goleadores")
                 
-                # ⭐ CORRECCIÓN: Filtramos exclusivamente los resultados anotados como "Gol"
+                # ⭐ Filtramos exclusivamente los resultados anotados como "Gol"
                 df_goles = df_finalizaciones[df_finalizaciones["resultado"].str.lower().str.contains("gol", na=False)]
                 
                 if not df_goles.empty:
@@ -1064,7 +1110,7 @@ def render_dashboard_general(conn):
         df_abp = df_filtrado[df_filtrado["tipo_evento"] == "ABP"]
         if not df_abp.empty:
             st.divider()
-            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales)")
+            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales zona alta)")
             col_tipo_abp, col_lado_abp = st.columns(2)
             with col_tipo_abp:
                 st.markdown("#### 📋 Por Tipo de ABP")
@@ -1202,7 +1248,7 @@ def render_rendimiento_individual(conn):
         total_acciones = len(df_jugador_filtrado)
         st.metric("Total Acciones", total_acciones)
     with m2:
-        # ⭐ CORRECCIÓN: Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
+        # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
         goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado"]))])
         st.metric("Tiros al Arco", goles_tiros)
     with m3:
@@ -1221,7 +1267,7 @@ def render_rendimiento_individual(conn):
         st.subheader("📍 Mapa de Calor Propio")
         txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel} ({equipo_sel})"
         fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_filtrado, titulo_mapa=txt_mapa_indiv)
-        st.plotly_chart(fig_heatmap_indiv, use_container_width=True, key="heatmap_individual_chart", config={"responsive": True, "displaylogo": False})
+        st.plotly_chart(fig_heatmap_indiv, use_container_width=False, key="heatmap_individual_chart")
 
     with col_tabla:
         st.subheader("📋 Historial de Acciones")
