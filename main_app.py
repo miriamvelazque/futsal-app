@@ -9,6 +9,7 @@ import hashlib  # Para encriptar contraseñas de forma segura
 import time
 import streamlit.components.v1 as components
 import os
+import io
 from datetime import date
 
 PLAYER_PHOTOS_DIR = "player_photos"
@@ -311,6 +312,59 @@ def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inic
                   (str(fecha), rival, equipo_propio, lugar, lado_inicio_1t, competencia,
                    pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival))
     conn.commit()
+
+
+def exportar_partido_excel(conn, fecha, rival):
+    """Genera un Excel en memoria con los eventos y los datos de posesión/tenencia
+    de un partido puntual (fecha + rival), para transferir la carga entre instancias
+    (ej: desde la app pública del DT hacia la base local)."""
+    df_eventos_partido = pd.read_sql(
+        "SELECT * FROM eventos WHERE fecha = ? AND rival = ?", conn, params=(str(fecha), rival)
+    )
+    df_partido_info = pd.read_sql(
+        "SELECT * FROM partidos WHERE fecha = ? AND rival = ?", conn, params=(str(fecha), rival)
+    )
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_eventos_partido.to_excel(writer, sheet_name="Eventos", index=False)
+        df_partido_info.to_excel(writer, sheet_name="Partido", index=False)
+    buffer.seek(0)
+    return buffer
+
+
+def importar_partido_excel(conn, archivo_excel):
+    """Importa un Excel generado por exportar_partido_excel: carga los eventos
+    (reutilizando insertar_eventos_bulk) y hace upsert de la fila de posesión/tenencia
+    del partido (reutilizando guardar_posesion_partido)."""
+    xls = pd.ExcelFile(archivo_excel)
+
+    df_eventos_import = pd.read_excel(xls, sheet_name="Eventos") if "Eventos" in xls.sheet_names else pd.DataFrame()
+    df_partido_import = pd.read_excel(xls, sheet_name="Partido") if "Partido" in xls.sheet_names else pd.DataFrame()
+
+    count_eventos = 0
+    if not df_eventos_import.empty:
+        # Sacamos el id original: al insertar en destino, el autoincrement local genera uno nuevo
+        if "id" in df_eventos_import.columns:
+            df_eventos_import = df_eventos_import.drop(columns=["id"])
+        count_eventos = insertar_eventos_bulk(conn, df_eventos_import)
+
+    partido_importado = False
+    if not df_partido_import.empty:
+        fila = df_partido_import.iloc[0]
+        guardar_posesion_partido(
+            conn,
+            fila.get("fecha", ""), fila.get("rival", ""), fila.get("equipo_propio", ""),
+            fila.get("lugar", ""), fila.get("lado_inicio_1t", ""),
+            float(fila.get("posesion_1t_propio_seg") or 0.0),
+            float(fila.get("posesion_1t_rival_seg") or 0.0),
+            float(fila.get("posesion_2t_propio_seg") or 0.0),
+            float(fila.get("posesion_2t_rival_seg") or 0.0),
+            competencia=fila.get("competencia", "") or "",
+        )
+        partido_importado = True
+
+    return count_eventos, partido_importado
 
 
 def formatear_tiempo(segundos_totales):
@@ -775,24 +829,69 @@ def render_carga_datos(conn):
 
     st.divider()
 
-    st.subheader("Cargar eventos desde CSV o Excel")
-    uploaded_file = st.file_uploader("Subí tu archivo con los eventos", type=["csv", "xlsx"])
+    # =====================================================
+    # CARGAR EVENTOS (CSV/Excel del coach, o un partido exportado) / EXPORTAR PARTIDO
+    # =====================================================
+    st.subheader("🔄 Cargar / Transferir Partido")
 
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith(".csv"):
-                df_upload = pd.read_csv(uploaded_file)
-            else:
-                df_upload = pd.read_excel(uploaded_file)
+    col_carga, col_exp = st.columns(2)
 
-            st.write("Vista previa del archivo:")
-            st.dataframe(df_upload.head(10))
+    with col_carga:
+        st.markdown("**📤 Cargar eventos desde CSV o Excel**")
+        st.caption("Funciona con la planilla del coach o con un partido exportado desde otra instancia (trae eventos + tenencia).")
+        uploaded_file = st.file_uploader("Subí tu archivo con los eventos", type=["csv", "xlsx"])
 
-            if st.button("Guardar eventos cargados"):
-                count = insertar_eventos_bulk(conn, df_upload)
-                st.success(f"✅ Se guardaron {count} eventos desde el archivo")
-        except Exception as e:
-            st.error(f"No se pudo leer el archivo: {e}")
+        if uploaded_file is not None:
+            try:
+                es_partido_exportado = False
+                if uploaded_file.name.endswith(".csv"):
+                    df_upload = pd.read_csv(uploaded_file)
+                else:
+                    xls = pd.ExcelFile(uploaded_file)
+                    if "Eventos" in xls.sheet_names and "Partido" in xls.sheet_names:
+                        es_partido_exportado = True
+                        df_upload = pd.read_excel(xls, sheet_name="Eventos")
+                    else:
+                        df_upload = pd.read_excel(xls)
+
+                st.write("Vista previa del archivo:")
+                st.dataframe(df_upload.head(10))
+
+                if st.button("Guardar eventos cargados"):
+                    if es_partido_exportado:
+                        uploaded_file.seek(0)
+                        count_ev, partido_ok = importar_partido_excel(conn, uploaded_file)
+                        mensaje_partido = " y los datos de tenencia" if partido_ok else ""
+                        st.success(f"✅ Se guardaron {count_ev} eventos{mensaje_partido} desde el archivo")
+                    else:
+                        count = insertar_eventos_bulk(conn, df_upload)
+                        st.success(f"✅ Se guardaron {count} eventos desde el archivo")
+            except Exception as e:
+                st.error(f"No se pudo leer el archivo: {e}")
+
+    with col_exp:
+        st.markdown("**📥 Exportar partido**")
+        st.caption("El DT carga el partido en su instancia y lo exporta acá para pasártelo.")
+        df_partidos_export = cargar_partidos_df(conn)
+        if df_partidos_export is None:
+            st.info("Todavía no hay partidos guardados para exportar.")
+        else:
+            df_partidos_export = df_partidos_export.copy()
+            df_partidos_export["etiqueta"] = df_partidos_export["fecha"].astype(str) + " - " + df_partidos_export["rival"].astype(str)
+            opciones_partido = dict(zip(df_partidos_export["etiqueta"], zip(df_partidos_export["fecha"], df_partidos_export["rival"])))
+            etiqueta_sel = st.selectbox("Elegí el partido a exportar", list(opciones_partido.keys()), key="export_partido_sel")
+            fecha_exp, rival_exp = opciones_partido[etiqueta_sel]
+
+            buffer_excel = exportar_partido_excel(conn, fecha_exp, rival_exp)
+            nombre_archivo = f"partido_{str(fecha_exp)}_{str(rival_exp)}.xlsx".replace(" ", "_")
+            st.download_button(
+                "⬇️ Descargar partido (Excel)",
+                data=buffer_excel,
+                file_name=nombre_archivo,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="btn_descargar_partido_excel"
+            )
 
     st.divider()
 
@@ -1098,7 +1197,6 @@ def render_carga_datos(conn):
 
     st.divider()
 
-
     st.subheader("Últimos eventos cargados")
 
     # 1. Manejo del mensaje de éxito persistente usando session_state
@@ -1233,8 +1331,8 @@ def render_dashboard_general(conn):
     if total_segundos > 0:
         col_pos_metric, col_pos_chart = st.columns([1, 1.5])
         with col_pos_metric:
-            st.metric("Posesión Propia", formatear_tiempo(segundos_propio), f"{segundos_propio / total_segundos * 100:.1f}%")
-            st.metric("Posesión Rival", formatear_tiempo(segundos_rival), f"{segundos_rival / total_segundos * 100:.1f}%")
+            st.metric("Posesión Propia", f"{segundos_propio / total_segundos * 100:.1f}%", formatear_tiempo(segundos_propio))
+            st.metric("Posesión Rival", f"{segundos_rival / total_segundos * 100:.1f}%", formatear_tiempo(segundos_rival))
         with col_pos_chart:
             df_tenencia = pd.DataFrame({"Equipo": ["Propio", "Rival"], "Segundos": [segundos_propio, segundos_rival]})
             fig_tenencia = px.pie(
@@ -1471,17 +1569,17 @@ def render_rendimiento_individual(conn):
     if equipo_sel == "Propio":
         ficha = buscar_jugador_por_numero(conn, jugador_sel)
         if ficha:
-            col_foto, col_datos = st.columns([1, 5])
+            col_foto, col_datos = st.columns([1, 2.2], gap="small")
             with col_foto:
                 if ficha["foto_path"] and os.path.exists(ficha["foto_path"]):
-                    st.image(ficha["foto_path"], width=80)
+                    st.image(ficha["foto_path"], width=110)
                 else:
                     st.markdown("### 👤")
             with col_datos:
                 edad = calcular_edad(ficha["fecha_nacimiento"])
-                st.markdown(f"**{ficha['apellido']}, {ficha['nombre']}**")
-                st.caption(f"COMET: {ficha['comet'] or '—'} · {ficha['posicion'] or '—'} · {edad if edad is not None else '—'} años")
-    st.divider()
+                st.markdown(f"##### {ficha['apellido']}, {ficha['nombre']}")
+                st.caption(f"COMET: {ficha['comet'] or '—'}")
+                st.caption(f"{ficha['posicion'] or '—'} · {edad if edad is not None else '—'} años")
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
