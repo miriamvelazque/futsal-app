@@ -531,7 +531,8 @@ CANCHA_ALTO = 20   # metros real (eje Y)
 
 # Equipos de la liga precargados para los selectores de "Equipo propio" / "Equipo rival"
 EQUIPOS_LIGA = [
-"CAMIONEROS",
+    "LOS TRONCOS",
+    "CAMIONEROS",
     "SAN ISIDRO",
     "LUZ Y FUERZA",
     "METALURGICO",
@@ -978,8 +979,9 @@ def render_carga_datos(conn):
             key="tipo_evento_rapido"
         )
     with col2:
-        jugador = st.text_input(
-            "Número de jugador", key="jugador_rapido",
+        lista_dorsales = [str(i) for i in range(1, 100)]
+        jugador = st.selectbox(
+            "Número de jugador", lista_dorsales, key="jugador_rapido",
             disabled=(tipo_evento == "ABP"),
             help="No aplica para ABP" if tipo_evento == "ABP" else None
         )
@@ -1000,7 +1002,7 @@ def render_carga_datos(conn):
         with col_abp1:
             tipo_abp_sel = st.selectbox(
                 "Tipo de ABP",
-                ["Córner", "Tiro Libre", "Lateral zona alta", "Tiro 10mtrs.", "Penal"],
+                ["Córner", "Tiro Libre", "Lateral zona alta", "Tiro 10 mtrs.", "Penal"],
                 key="tipo_abp_rapido"
             )
         with col_abp2:
@@ -1568,7 +1570,6 @@ def render_jugadores(conn, rol_actual):
                     color_estado = "green" if estado_jug == "Activo" else "orange"
                     st.markdown(f"**Estado:** :{color_estado}[{estado_jug}]")
                     
-                    # Datos principales en métricas o columnas de texto fijo
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Camiseta", int(j_det['numero_camiseta']) if pd.notna(j_det['numero_camiseta']) else "-")
                     m2.metric("Posición", j_det.get('posicion', '-'))
@@ -1576,30 +1577,30 @@ def render_jugadores(conn, rol_actual):
 
                 st.markdown("---")
                 
-                # Pestañas internas de información en modo lectura
+                # Pestañas internas de información en modo lectura (con keys dinámicas por jugador_id)
                 tab_dat, tab_med, tab_obs = st.tabs(["📄 Datos Personales", "🏥 Datos Médicos y Contacto", "📝 Observaciones"])
 
                 with tab_dat:
                     d1, d2 = st.columns(2)
                     with d1:
-                        st.text_input("DNI", value=str(j_det.get('dni', '')), disabled=True, key="ver_dni")
-                        st.text_input("Nº COMET", value=str(j_det.get('comet', '')), disabled=True, key="ver_comet")
-                        st.text_input("Pie hábil", value=str(j_det.get('pie_habil', '')), disabled=True, key="ver_pie")
+                        st.text_input("DNI", value=str(j_det.get('dni', '')), disabled=True, key=f"ver_dni_{jugador_id_ver}")
+                        st.text_input("Nº COMET", value=str(j_det.get('comet', '')), disabled=True, key=f"ver_comet_{jugador_id_ver}")
+                        st.text_input("Pie hábil", value=str(j_det.get('pie_habil', '')), disabled=True, key=f"ver_pie_{jugador_id_ver}")
                     with d2:
-                        st.text_input("Teléfono", value=str(j_det.get('telefono', '')), disabled=True, key="ver_tel")
-                        st.text_input("Dirección", value=str(j_det.get('direccion', '')), disabled=True, key="ver_direccion")
+                        st.text_input("Teléfono", value=str(j_det.get('telefono', '')), disabled=True, key=f"ver_tel_{jugador_id_ver}")
+                        st.text_input("Dirección", value=str(j_det.get('direccion', '')), disabled=True, key=f"ver_dir_{jugador_id_ver}")
 
                 with tab_med:
                     e1, e2 = st.columns(2)
                     with e1:
-                        st.text_input("Grupo Sanguíneo", value=str(j_det.get('grupo_sanguineo', '')), disabled=True, key="ver_gs")
-                        st.text_input("Obra Social", value=str(j_det.get('obra_social', '')), disabled=True, key="ver_os")
+                        st.text_input("Grupo Sanguíneo", value=str(j_det.get('grupo_sanguineo', '')), disabled=True, key=f"ver_gs_{jugador_id_ver}")
+                        st.text_input("Obra Social", value=str(j_det.get('obra_social', '')), disabled=True, key=f"ver_os_{jugador_id_ver}")
                     with e2:
-                        st.text_input("Contacto de Emergencia", value=str(j_det.get('contacto_emergencia_nombre', '')), disabled=True, key="ver_c_nombre")
-                        st.text_input("Teléfono de Emergencia", value=str(j_det.get('contacto_emergencia_telefono', '')), disabled=True, key="ver_c_tel")
+                        st.text_input("Contacto de Emergencia", value=str(j_det.get('contacto_emergencia_nombre', '')), disabled=True, key=f"ver_cnom_{jugador_id_ver}")
+                        st.text_input("Teléfono de Emergencia", value=str(j_det.get('contacto_emergencia_telefono', '')), disabled=True, key=f"ver_ctel_{jugador_id_ver}")
 
                 with tab_obs:
-                    st.text_area("Notas / Observaciones", value=str(j_det.get('observaciones', '')), disabled=True, key="ver_obs_text")
+                    st.text_area("Notas / Observaciones", value=str(j_det.get('observaciones', '')), disabled=True, key=f"ver_obs_{jugador_id_ver}")
 
                 st.markdown("---")
                 
