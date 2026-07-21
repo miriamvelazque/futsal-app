@@ -22,11 +22,20 @@ FOTO_JUGADOR_LADO_PX = 320
 # Duración de cada tiempo en segundos (20 min = 1200 seg)
 DURACION_TOTAL_SEGUNDOS = 1200
 
+# Logo del club/desarrollador (favicon + header). Si el archivo no existe (ej. todavía
+# no lo subiste al repo), se usa el emoji como respaldo automático sin romper nada.
+LOGO_PATH = "assets/logo.png"
+LOGO_DISPONIBLE = os.path.exists(LOGO_PATH)
+
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
-st.set_page_config(page_title="Planilla Digital de Futsal", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="Futsal IQ Analyzer",
+        page_icon=LOGO_PATH if LOGO_DISPONIBLE else "📊",
+    layout="wide"
+)
 
 # Pestañas más grandes y protagonistas en toda la app
 st.markdown("""
@@ -72,7 +81,7 @@ def verificar_usuario(conn, usuario, clave):
 
 def mostrar_login(conn):
     """Muestra un formulario estético de Login en el centro de la pantalla."""
-    st.markdown("<h2 style='text-align: center;'>🔐 Acceso Planilla Digital</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>🔐 Acceso Futsal IQ Analyzer</h2>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
@@ -634,10 +643,42 @@ COLORES_TIPO_EVENTO = {
 }
 COLOR_TIPO_EVENTO_DEFAULT = "#9CA3AF"
 
+# Paleta fija para el resultado de las Finalizaciones (Gol/Atajado/Desviado/Bloqueado).
+# Se usa igual en Dashboard General e Individual para que el mismo resultado
+# siempre tenga el mismo color en toda la app.
+COLORES_RESULTADO_FINALIZACION = {
+    "Gol": "#2ecc71",
+    "Atajado": "#4ECDC4",
+    "Desviado": "#FFD166",
+    "Bloqueado": "#A78BFA",
+    "Sin especificar": "#6B7280",
+}
+
+# Paleta fija para el lado de los ABP (mismo criterio: consistencia entre gráficos).
+COLORES_LADO_ABP = {
+    "Derecho": "#118AB2",
+    "Izquierdo": "#F4A261",
+    "Sin especificar": "#6B7280",
+}
+
 
 def color_por_tipo_evento(tipo_evento):
     """Devuelve el color asignado a un tipo de evento, o un gris neutro si no está mapeado."""
     return COLORES_TIPO_EVENTO.get(tipo_evento, COLOR_TIPO_EVENTO_DEFAULT)
+
+
+def render_kpi_card(columna, etiqueta, valor, color_acento="#4158f6"):
+    """Tarjeta de KPI centrada, con acento de color discreto en el borde superior.
+    El color_acento por default es el azul de la cancha; se puede pasar el color
+    de COLORES_TIPO_EVENTO correspondiente para que la tarjeta 'combine' con el resto."""
+    with columna:
+        st.markdown(f"""
+        <div style="background:#12141c; border:1px solid #2a2d3a; border-top:3px solid {color_acento};
+                    border-radius:10px; padding:16px 10px; text-align:center;">
+            <div style="font-size:12px; color:#9CA3AF; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.6px;">{etiqueta}</div>
+            <div style="font-size:30px; font-weight:700; color:white; line-height:1;">{valor}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 def selector_equipo_liga(etiqueta, key_prefix, indice_default=0):
@@ -1315,18 +1356,15 @@ def render_dashboard_general(conn):
     # --- INDICADORES ---
     st.divider()
     col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Acciones Filtradas", len(df_filtrado))
-    with col2:
-        # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
-        tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
-        st.metric("Cantidad de finalizaciones", tiros_efectivos)
-    with col3:
-        st.metric("Pelotas Perdidas", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
-    with col4:
-        st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
-    with col5:
-        st.metric("ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]))
+    render_kpi_card(col1, "Acciones Filtradas", len(df_filtrado), color_acento="#4158f6")
+
+    # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
+    tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
+    render_kpi_card(col2, "Cantidad de finalizaciones", tiros_efectivos, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
+
+    render_kpi_card(col3, "Pelotas Perdidas", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]), color_acento=COLORES_TIPO_EVENTO["Perdidas"])
+    render_kpi_card(col4, "Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]), color_acento=COLORES_TIPO_EVENTO["Recuperos"])
+    render_kpi_card(col5, "ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]), color_acento=COLORES_TIPO_EVENTO["ABP"])
 
     # --- TENENCIA DE LA PELOTA ---
     st.divider()
@@ -1336,45 +1374,69 @@ def render_dashboard_general(conn):
     total_segundos = segundos_propio + segundos_rival
 
     if total_segundos > 0:
-        col_pos_metric, col_pos_chart = st.columns([1, 1.5])
+        # 1T y 2T siempre se calculan aparte (independiente del filtro global de tiempo),
+        # para poder comparar ambos parciales lado a lado.
+        seg_1t_propio, seg_1t_rival = calcular_tenencia_partido(df_partidos, partido_sel, "1T")
+        seg_2t_propio, seg_2t_rival = calcular_tenencia_partido(df_partidos, partido_sel, "2T")
+
+        col_pos_metric, col_pos_bar, col_pos_1t, col_pos_2t = st.columns([1, 1.6, 1, 1])
+
         with col_pos_metric:
             st.metric("Posesión Propia", f"{segundos_propio / total_segundos * 100:.1f}%", formatear_tiempo(segundos_propio))
             st.metric("Posesión Rival", f"{segundos_rival / total_segundos * 100:.1f}%", formatear_tiempo(segundos_rival))
-        with col_pos_chart:
-            df_tenencia = pd.DataFrame({"Equipo": ["Propio", "Rival"], "Segundos": [segundos_propio, segundos_rival]})
-            fig_tenencia = px.pie(
-                df_tenencia, values="Segundos", names="Equipo", hole=0.5,
-                color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"}
+
+        with col_pos_bar:
+            df_tenencia = pd.DataFrame({
+                "Equipo": ["Propio", "Rival"],
+                "Segundos": [segundos_propio, segundos_rival],
+            })
+            df_tenencia["Porcentaje"] = (df_tenencia["Segundos"] / total_segundos * 100).round(1)
+            fig_tenencia = px.bar(
+                df_tenencia, x="Segundos", y="Equipo", orientation="h",
+                color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"},
+                text=df_tenencia["Porcentaje"].astype(str) + "%"
             )
-            fig_tenencia.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
+            fig_tenencia.update_traces(textposition="outside")
+            fig_tenencia.update_layout(
+                height=280, margin=dict(t=30, b=10, l=10, r=30),
+                showlegend=False, xaxis_title=None, yaxis_title=None,
+                title=dict(text="Total del partido", font=dict(size=13, color="white"), x=0.5)
+            )
             st.plotly_chart(fig_tenencia, use_container_width=True, key="tenencia_pelota_chart")
+
+        with col_pos_1t:
+            total_1t = seg_1t_propio + seg_1t_rival
+            if total_1t > 0:
+                df_1t = pd.DataFrame({"Equipo": ["Propio", "Rival"], "Segundos": [seg_1t_propio, seg_1t_rival]})
+                fig_1t = px.pie(
+                    df_1t, values="Segundos", names="Equipo", hole=0.5,
+                    color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"}
+                )
+                fig_1t.update_layout(
+                    height=280, margin=dict(t=30, b=10, l=10, r=10), showlegend=False,
+                    title=dict(text="1er Tiempo", font=dict(size=13, color="white"), x=0.5)
+                )
+                st.plotly_chart(fig_1t, use_container_width=True, key="tenencia_1t_chart")
+            else:
+                st.info("Sin datos de 1T.")
+
+        with col_pos_2t:
+            total_2t = seg_2t_propio + seg_2t_rival
+            if total_2t > 0:
+                df_2t = pd.DataFrame({"Equipo": ["Propio", "Rival"], "Segundos": [seg_2t_propio, seg_2t_rival]})
+                fig_2t = px.pie(
+                    df_2t, values="Segundos", names="Equipo", hole=0.5,
+                    color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"}
+                )
+                fig_2t.update_layout(
+                    height=280, margin=dict(t=30, b=10, l=10, r=10), showlegend=False,
+                    title=dict(text="2do Tiempo", font=dict(size=13, color="white"), x=0.5)
+                )
+                st.plotly_chart(fig_2t, use_container_width=True, key="tenencia_2t_chart")
+            else:
+                st.info("Sin datos de 2T.")
     else:
         st.info("No hay datos de posesión cargados para este filtro. Cargalos desde el reloj de 'Control de Posesión' en Carga de Datos.")
-
-    # --- DISEÑO TÁCTICO INTERACTIVO (Fila Superior) ---
-    st.divider()
-    col_izq, col_der = st.columns([1.3, 1])
-
-    with col_izq:
-        st.subheader("📍 Mapa de Distribución y Calor de Futsal")
-        txt_mapa = f"Filtro - Jugador: {jugador_sel} | Acción: {tipo_sel} | Equipo: {equipo_sel}"
-        fig_heatmap = generar_heatmap_analisis(df_filtrado, titulo_mapa=txt_mapa)
-        st.plotly_chart(fig_heatmap, use_container_width=False, key="heatmap_dashboard_general")
-
-    with col_der:
-        st.subheader("📊 Distribución de Volumen Táctico")
-        if not df_filtrado.empty:
-            counts = df_filtrado["tipo_evento"].value_counts().reset_index()
-            counts.columns = ["Tipo de Acción", "Cantidad"]
-            fig_barras = px.bar(
-                counts, x="Cantidad", y="Tipo de Acción", 
-                orientation="h", color="Tipo de Acción",
-                color_discrete_map=COLORES_TIPO_EVENTO
-            )
-            fig_barras.update_layout(showlegend=False, height=380, margin=dict(t=20, b=20))
-            st.plotly_chart(fig_barras, use_container_width=True)
-        else:
-            st.info("Sin datos para generar gráficos.")
 
     # --- DESGLOSE DE FINALIZACIONES Y TABLA DE GOLEADORES (Fila Inferior) ---
     if not df_filtrado.empty:
@@ -1400,13 +1462,15 @@ def render_dashboard_general(conn):
                 fig_torta = px.pie(
                     res_counts, values="Cantidad", names="Resultado",
                     color="Resultado",
-                    color_discrete_sequence=px.colors.qualitative.Safe,
+                    color_discrete_map=COLORES_RESULTADO_FINALIZACION,
                     hole=0.4
                 )
                 fig_torta.update_layout(
                     height=240, 
                     margin=dict(t=10, b=10, l=10, r=10),
-                    showlegend=False
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5,
+                                font=dict(size=10)),
+                    showlegend=True
                 )
                 st.plotly_chart(fig_torta, use_container_width=True)
 
@@ -1462,7 +1526,7 @@ def render_dashboard_general(conn):
                 lado_abp_counts.columns = ["Lado", "Cantidad"]
                 fig_abp_lado = px.pie(
                     lado_abp_counts, values="Cantidad", names="Lado", hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Pastel1
+                    color="Lado", color_discrete_map=COLORES_LADO_ABP
                 )
                 fig_abp_lado.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_abp_lado, use_container_width=True, key="abp_por_lado")
@@ -1607,20 +1671,19 @@ def render_rendimiento_individual(conn):
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
     m1, m2, m3, m4 = st.columns(4)
-    
-    with m1:
-        total_acciones = len(df_jugador_filtrado)
-        st.metric("Total Acciones", total_acciones)
-    with m2:
-        # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
-        goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
-        st.metric("Cantidad de Finalizaciones", goles_tiros)
-    with m3:
-        perdidas = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"])
-        st.metric("Pelotas Perdidas", perdidas)
-    with m4:
-        recuperos = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"])
-        st.metric("Recuperaciones", recuperos)
+
+    total_acciones = len(df_jugador_filtrado)
+    render_kpi_card(m1, "Total Acciones", total_acciones, color_acento="#4158f6")
+
+    # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
+    goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
+    render_kpi_card(m2, "Cantidad de Finalizaciones", goles_tiros, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
+
+    perdidas = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"])
+    render_kpi_card(m3, "Pelotas Perdidas", perdidas, color_acento=COLORES_TIPO_EVENTO["Perdidas"])
+
+    recuperos = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"])
+    render_kpi_card(m4, "Recuperaciones", recuperos, color_acento=COLORES_TIPO_EVENTO["Recuperos"])
 
     st.divider()
 
@@ -1664,7 +1727,7 @@ def render_rendimiento_individual(conn):
                 fig_torta_j = px.pie(
                     res_counts_j, values="Cantidad", names="Resultado",
                     color="Resultado",
-                    color_discrete_sequence=px.colors.qualitative.Bold,
+                    color_discrete_map=COLORES_RESULTADO_FINALIZACION,
                     hole=0.4
                 )
                 fig_torta_j.update_layout(
@@ -1933,6 +1996,52 @@ def render_jugadores(conn, rol_actual):
 # =========================================================
 # FUNCIÓN PRINCIPAL (MAIN con Gestión de Sesión)
 # =========================================================
+def renderizar_header(texto_titulo):
+    """Muestra el logo (si está disponible) al lado del título de la página."""
+    if LOGO_DISPONIBLE:
+        col_logo, col_titulo = st.columns([1, 10])
+        with col_logo:
+            st.image(LOGO_PATH, width=60)
+        with col_titulo:
+            st.markdown(f"<h1 style='margin-top:8px;'>{texto_titulo}</h1>", unsafe_allow_html=True)
+    else:
+        st.title(f"📊 {texto_titulo}")
+
+
+def renderizar_footer():
+    """Pie de página fijo al final de la app: datos de contacto/redes del desarrollador."""
+    icono_whatsapp = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#25D366">
+        <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.406-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.489 1.2.532 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.354.101.174.449.741.964 1.201.663.591 1.221.774 1.394.86s.274.072.376-.043c.101-.116.433-.506.549-.68.116-.173.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.043.072.043.419-.101.825z"/>
+        <path d="M12 0C5.373 0 0 5.373 0 12c0 2.096.542 4.14 1.572 5.947L0 24l6.213-1.549A11.95 11.95 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.938a9.9 9.9 0 01-5.043-1.378l-.362-.215-3.696.921.941-3.6-.236-.372A9.933 9.933 0 012.062 12C2.062 6.51 6.51 2.062 12 2.062S21.938 6.51 21.938 12 17.49 21.938 12 21.938z"/>
+    </svg>"""
+
+    icono_facebook = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#1877F2">
+        <path d="M22.675 0h-21.35c-.732 0-1.325.593-1.325 1.325v21.351c0 .731.593 1.324 1.325 1.324h11.495v-9.294h-3.128v-3.622h3.128v-2.671c0-3.1 1.893-4.788 4.659-4.788 1.325 0 2.463.099 2.795.143v3.24l-1.918.001c-1.504 0-1.795.715-1.795 1.763v2.313h3.587l-.467 3.622h-3.12v9.293h6.116c.73 0 1.323-.593 1.323-1.325v-21.35c0-.732-.593-1.325-1.325-1.325z"/>
+    </svg>"""
+
+    icono_instagram = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#E1306C">
+        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+    </svg>"""
+
+    st.markdown("---")
+    st.markdown(f"""
+    <div style="text-align:center; padding:14px 0 6px 0; color:#6B7280; font-size:13px;">
+        <div style="display:flex; justify-content:center; gap:26px; margin-bottom:10px; flex-wrap:wrap;">
+            <a href="https://wa.me/5492964509725" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_whatsapp} 2964 50-9725
+            </a>
+            <a href="https://facebook.com/sublime.design" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_facebook} Sublime Design
+            </a>
+            <a href="https://instagram.com/sublime.tdf" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_instagram} sublime.tdf
+            </a>
+        </div>
+        <div>© 2026 Sublime Design — Todos los derechos reservados.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def main():
     conn = get_connection()
     init_db(conn)
@@ -1963,7 +2072,7 @@ def main():
 
     if rol_actual == "Administrador":
         # Acceso total a todas las funciones
-        st.title("📊 Planilla Digital de Futsal - Panel Admin")
+        renderizar_header("Futsal IQ Analyzer - Panel Admin")
         tab1, tab2, tab3, tab4 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
         with tab1:
@@ -1977,7 +2086,7 @@ def main():
             
     elif rol_actual == "Lector":
         # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
-        st.title("📊 Planilla Digital de Futsal")
+        renderizar_header("Futsal IQ Analyzer - Panel Lector")
         tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
         with tab2:
@@ -1986,6 +2095,8 @@ def main():
             render_rendimiento_individual(conn)
         with tab4:
             render_jugadores(conn, rol_actual)
+
+    renderizar_footer()
 
 
 if __name__ == "__main__":
