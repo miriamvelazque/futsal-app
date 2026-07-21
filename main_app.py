@@ -10,6 +10,7 @@ import time
 import streamlit.components.v1 as components
 import os
 import io
+import base64
 from datetime import date
 
 PLAYER_PHOTOS_DIR = "player_photos"
@@ -1078,8 +1079,8 @@ def render_carga_datos(conn):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         tipo_evento = st.selectbox(
-            "Tipo de evento",
-            ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "ABP"],
+            "Tipo de evento", 
+            ["Finalizaciones", "Recuperos", "Perdidas", "Tiro 10 mtrs.", "Penal", "Tiro Libre","Faltas", "ABP"],
             key="tipo_evento_rapido"
         )
     with col2:
@@ -1099,6 +1100,12 @@ def render_carga_datos(conn):
 
     if tipo_evento == "Finalizaciones":
         resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
+    elif tipo_evento == "Penal":
+        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado"], key="resultado_rapido")
+    elif tipo_evento == "Tiro Libre":
+        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido") 
+    elif tipo_evento == "Tiro 10 mtrs.":
+        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")           
     elif tipo_evento == "Faltas":
         tipo_tarjeta_sel = st.selectbox("Tarjeta asociada a la falta", ["Sin tarjeta", "Amarilla", "Roja"], key="tipo_tarjeta_falta")
     elif tipo_evento == "ABP":
@@ -1106,7 +1113,7 @@ def render_carga_datos(conn):
         with col_abp1:
             tipo_abp_sel = st.selectbox(
                 "Tipo de ABP",
-                ["Córner", "Tiro Libre", "Lateral zona alta", "Tiro 10 mtrs.", "Penal"],
+                ["Córner", "Lateral zona alta"],
                 key="tipo_abp_rapido"
             )
         with col_abp2:
@@ -1569,17 +1576,33 @@ def render_rendimiento_individual(conn):
     if equipo_sel == "Propio":
         ficha = buscar_jugador_por_numero(conn, jugador_sel)
         if ficha:
-            col_foto, col_datos = st.columns([1, 2.2], gap="small")
-            with col_foto:
-                if ficha["foto_path"] and os.path.exists(ficha["foto_path"]):
-                    st.image(ficha["foto_path"], width=110)
-                else:
-                    st.markdown("### 👤")
-            with col_datos:
-                edad = calcular_edad(ficha["fecha_nacimiento"])
-                st.markdown(f"##### {ficha['apellido']}, {ficha['nombre']}")
-                st.caption(f"COMET: {ficha['comet'] or '—'}")
-                st.caption(f"{ficha['posicion'] or '—'} · {edad if edad is not None else '—'} años")
+            edad = calcular_edad(ficha["fecha_nacimiento"])
+
+            foto_html = '<div style="font-size:42px; width:90px; text-align:center;">👤</div>'
+            if ficha["foto_path"] and os.path.exists(ficha["foto_path"]):
+                try:
+                    with open(ficha["foto_path"], "rb") as f:
+                        foto_b64 = base64.b64encode(f.read()).decode()
+                    ext = ficha["foto_path"].split(".")[-1].lower()
+                    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+                    foto_html = (
+                        f'<img src="data:image/{mime};base64,{foto_b64}" '
+                        f'style="width:110px; height:110px; object-fit:cover; border-radius:10px; flex-shrink:0;">'
+                    )
+                except Exception:
+                    pass
+
+            st.markdown(f"""
+            <div style="display:flex; align-items:center; gap:20px;">
+                {foto_html}
+                <div>
+                    <div style="font-size:19px; font-weight:700; color:white; margin-bottom:3px;">{ficha['apellido']}, {ficha['nombre']}</div>
+                    <div style="font-size:13px; color:#9CA3AF;">COMET: {ficha['comet'] or '—'}</div>
+                    <div style="font-size:13px; color:#9CA3AF;">{ficha['posicion'] or '—'} · {edad if edad is not None else '—'} años</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    st.divider()
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
