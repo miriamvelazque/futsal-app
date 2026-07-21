@@ -102,6 +102,11 @@ def get_connection():
     conn = sqlite3.connect("futsal.db", check_same_thread=False)
     return conn
 
+def eliminar_evento(conn, evento_id):
+    """Elimina un evento específico de la tabla eventos según su ID único."""
+    c = conn.cursor()
+    c.execute("DELETE FROM eventos WHERE id = ?", (evento_id,))
+    conn.commit()
 
 def init_db(conn):
     """Crea las tablas necesarias si no existen, incluyendo la de usuarios."""
@@ -1093,10 +1098,62 @@ def render_carga_datos(conn):
 
     st.divider()
 
+
     st.subheader("Últimos eventos cargados")
+
+    # 1. Manejo del mensaje de éxito persistente usando session_state
+    if "mensaje_exito_borrado" in st.session_state:
+        st.success(st.session_state["mensaje_exito_borrado"])
+        # Limpiamos la variable para que no se muestre eternamente en futuras recargas
+        del st.session_state["mensaje_exito_borrado"]
+
     df_eventos_recientes = cargar_eventos_df(conn, limit=10)
-    if df_eventos_recientes is not None:
-        st.dataframe(df_eventos_recientes)
+
+    if df_eventos_recientes is not None and not df_eventos_recientes.empty:
+        # Preparamos una copia para el editor interactivo
+        df_mostrar = df_eventos_recientes.copy()
+        
+        # Insertamos la columna de checkboxes al principio
+        df_mostrar.insert(0, "Seleccionar", False)
+        
+        # Configuramos la columna de selección y bloqueamos el resto para que no se editen por error
+        configuracion_columnas = {
+            "Seleccionar": st.column_config.CheckboxColumn(
+                "🗑️ Borrar",
+                help="Marcá la casilla del evento que quieras eliminar",
+                default=False,
+            ),
+            "id": st.column_config.NumberColumn("ID", disabled=True),
+        }
+
+        # Mostramos la tabla interactiva
+        df_editado = st.data_editor(
+            df_mostrar,
+            column_config=configuracion_columnas,
+            disabled=[col for col in df_mostrar.columns if col != "Seleccionar"],
+            hide_index=True,
+            use_container_width=True,
+            key="editor_eventos_recientes_borrar"
+        )
+
+        # Obtenemos los IDs de las filas que tildaste
+        ids_a_borrar = df_editado[df_editado["Seleccionar"] == True]["id"].tolist()
+
+        if ids_a_borrar:
+            st.warning(f"⚠️ Has seleccionado **{len(ids_a_borrar)}** evento(s) para eliminar.")
+            
+            # Botón de confirmación para evitar borrados accidentales
+            if st.button("🗑️ Confirmar y Borrar Eventos Seleccionados", type="primary", key="btn_confirmar_borrado_eventos"):
+                try:
+                    for evento_id in ids_a_borrar:
+                        eliminar_evento(conn, evento_id)
+                    
+                    # Guardamos el mensaje en la sesión antes de recargar
+                    st.session_state["mensaje_exito_borrado"] = f"✅ Se eliminaron correctamente {len(ids_a_borrar)} eventos."
+                    
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error al intentar borrar los eventos: {e}")
     else:
         st.info("No hay eventos cargados aún")
 
@@ -1117,22 +1174,25 @@ def render_dashboard_general(conn):
 
     # --- BARRA DE FILTROS SUPERIOR ---
     st.markdown("### 🔍 Filtros Globales")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         partidos_disponibles = ["Todos"] + sorted(list(df_eventos["partido"].dropna().unique()), reverse=True)
         partido_sel = st.selectbox("Filtrar por Partido (Fecha - Rival)", partidos_disponibles)
+
     with c2:
-        jugadores_disponibles = ["Todos"] + sorted(list(df_eventos["jugador"].dropna().unique()))
-        jugador_sel = st.selectbox("Filtrar por Jugador", jugadores_disponibles)
-    with c3:
         tipos_disponibles = ["Todos"] + list(df_eventos["tipo_evento"].dropna().unique())
         tipo_sel = st.selectbox("Filtrar por Tipo de Acción", tipos_disponibles)
-    with c4:
+
+    with c3:
         equipos_disponibles = ["Todos"] + sorted(list(df_eventos["equipo"].dropna().unique()))
         equipo_sel = st.selectbox("Filtrar por Equipo", equipos_disponibles)
-    with c5:
+
+    with c4:
         tiempos_disponibles = ["Todos"] + sorted(list(df_eventos["tiempo"].dropna().unique()))
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles)
+
+    # Definimos la variable jugador_sel fija en "Todos" para que los gráficos y filtros cruzados no den error
+    jugador_sel = "Todos"
 
     # Filtros cruzados
     df_filtrado = df_eventos.copy()
