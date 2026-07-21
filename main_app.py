@@ -10,8 +10,13 @@ import time
 import streamlit.components.v1 as components
 import os
 from datetime import date
+
 PLAYER_PHOTOS_DIR = "player_photos"
 os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
+
+# Tamaño fijo (cuadrado) al que se normalizan todas las fotos del plantel
+FOTO_JUGADOR_LADO_PX = 320
+
 # Duración de cada tiempo en segundos (20 min = 1200 seg)
 DURACION_TOTAL_SEGUNDOS = 1200
 
@@ -20,6 +25,30 @@ DURACION_TOTAL_SEGUNDOS = 1200
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
 st.set_page_config(page_title="Planilla Digital de Futsal", page_icon="📊", layout="wide")
+
+# Pestañas más grandes y protagonistas en toda la app
+st.markdown("""
+<style>
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 58px;
+    white-space: pre-wrap;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 10px 26px;
+    border-radius: 10px 10px 0 0;
+}
+.stTabs [data-baseweb="tab"] p {
+    font-size: 20px;
+    font-weight: 700;
+}
+.stTabs [aria-selected="true"] {
+    background-color: rgba(255, 107, 107, 0.15);
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # =========================================================
@@ -102,6 +131,7 @@ def init_db(conn):
                     zona TEXT,
                     resultado TEXT,
                     tipo_tarjeta TEXT,
+                    tipo_abp TEXT,
                     x REAL,
                     y REAL
                 )""")
@@ -147,6 +177,8 @@ def init_db(conn):
         c.execute("ALTER TABLE eventos ADD COLUMN x REAL")
     if "y" not in columnas_eventos:
         c.execute("ALTER TABLE eventos ADD COLUMN y REAL")
+    if "tipo_abp" not in columnas_eventos:
+        c.execute("ALTER TABLE eventos ADD COLUMN tipo_abp TEXT")
 
     # Asegurar columnas nuevas en tabla partidos
     c.execute("PRAGMA table_info(partidos)")
@@ -154,6 +186,7 @@ def init_db(conn):
     nuevas_columnas_partidos = {
         "equipo_propio": "TEXT",
         "lugar": "TEXT",
+        "competencia": "TEXT",
         "lado_inicio_1t": "TEXT",
         "posesion_1t_propio_seg": "REAL",
         "posesion_1t_rival_seg": "REAL",
@@ -232,44 +265,45 @@ def insertar_eventos_bulk(conn, df_upload):
         zona = str(row.get("zona", "")) if not pd.isna(row.get("zona", "")) else ""
         resultado = str(row.get("resultado", "")) if not pd.isna(row.get("resultado", "")) else ""
         tipo_tarjeta = str(row.get("tipo_tarjeta", "")) if not pd.isna(row.get("tipo_tarjeta", "")) else ""
+        tipo_abp = str(row.get("tipo_abp", "")) if not pd.isna(row.get("tipo_abp", "")) else ""
         x = row.get("x", None)
         y = row.get("y", None)
 
-        c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, x, y)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, x, y))
+        c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y))
         count += 1
     conn.commit()
     return count
 
 
-def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado="", tipo_tarjeta="", x=None, y=None):
+def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado="", tipo_tarjeta="", tipo_abp="", x=None, y=None):
     """Inserta un único evento con coordenadas X e Y exactas en la tabla."""
     c = conn.cursor()
-    c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, x, y)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-              (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, x, y))
+    c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y))
     conn.commit()
 
 def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inicio_1t,
-                              pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival):
+                              pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival, competencia=""):
     """Inserta o actualiza (upsert) el registro de partido con los datos de posesión por tiempo."""
     c = conn.cursor()
     c.execute("SELECT id FROM partidos WHERE fecha = ? AND rival = ?", (str(fecha), rival))
     existente = c.fetchone()
     if existente:
-        c.execute("""UPDATE partidos SET equipo_propio=?, lugar=?, lado_inicio_1t=?,
+        c.execute("""UPDATE partidos SET equipo_propio=?, lugar=?, lado_inicio_1t=?, competencia=?,
                      posesion_1t_propio_seg=?, posesion_1t_rival_seg=?,
                      posesion_2t_propio_seg=?, posesion_2t_rival_seg=?
                      WHERE id=?""",
-                  (equipo_propio, lugar, lado_inicio_1t, pos_1t_propio, pos_1t_rival,
+                  (equipo_propio, lugar, lado_inicio_1t, competencia, pos_1t_propio, pos_1t_rival,
                    pos_2t_propio, pos_2t_rival, existente[0]))
     else:
-        c.execute("""INSERT INTO partidos (fecha, rival, equipo_propio, lugar, lado_inicio_1t,
+        c.execute("""INSERT INTO partidos (fecha, rival, equipo_propio, lugar, lado_inicio_1t, competencia,
                      posesion_1t_propio_seg, posesion_1t_rival_seg,
                      posesion_2t_propio_seg, posesion_2t_rival_seg)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (str(fecha), rival, equipo_propio, lugar, lado_inicio_1t,
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (str(fecha), rival, equipo_propio, lugar, lado_inicio_1t, competencia,
                    pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival))
     conn.commit()
 
@@ -333,33 +367,35 @@ def calcular_edad(fecha_nacimiento_str):
         return hoy.year - fn.year - ((hoy.month, hoy.day) < (fn.month, fn.day))
     except Exception:
         return None
-
-
-FOTO_JUGADOR_LADO_PX = 320  # Tamaño fijo (cuadrado) al que se normalizan todas las fotos del plantel
-
+# Tamaño fijo (cuadrado) al que se normalizan todas las fotos del plantel
+FOTO_JUGADOR_LADO_PX = 320
 
 def guardar_foto_jugador(uploaded_file, dni):
-    """Guarda la foto subida en disco, recortada a un cuadrado fijo (centrado) y
-    reescalada, para que todas las fotos del plantel se vean del mismo tamaño
-    sin importar la relación de aspecto de la imagen original."""
+    """Guarda la foto subida en disco usando el DNI como nombre de archivo único."""
     if uploaded_file is None:
         return None
+    
     path = f"{PLAYER_PHOTOS_DIR}/{dni}.jpg"
     try:
         from PIL import Image, ImageOps
         imagen = Image.open(uploaded_file)
-        imagen = ImageOps.exif_transpose(imagen)  # corrige rotación de fotos tomadas con celular
+        imagen = ImageOps.exif_transpose(imagen) # corrige rotación de fotos tomadas con celular
         imagen = imagen.convert("RGB")
+        
+        # ImageOps.fit con centering=(0.5, 0.5) recorta exactamente el centro 
+        # para que siempre quede un cuadrado perfecto de FOTO_JUGADOR_LADO_PX
         imagen_cuadrada = ImageOps.fit(
-            imagen, (FOTO_JUGADOR_LADO_PX, FOTO_JUGADOR_LADO_PX), Image.LANCZOS
+            imagen, 
+            (FOTO_JUGADOR_LADO_PX, FOTO_JUGADOR_LADO_PX), 
+            method=Image.Resampling.LANCZOS, 
+            centering=(0.5, 0.5)
         )
         imagen_cuadrada.save(path, "JPEG", quality=87)
     except Exception:
         # Fallback: si algo falla al procesar la imagen, guardamos el archivo tal cual
-        ext = uploaded_file.name.split(".")[-1].lower()
-        path = f"{PLAYER_PHOTOS_DIR}/{dni}.{ext}"
         with open(path, "wb") as f:
             f.write(uploaded_file.getbuffer())
+            
     return path
 
 
@@ -443,61 +479,49 @@ def buscar_jugador_por_numero(conn, numero_camiseta):
         "foto_path": row[3], "posicion": row[4], "fecha_nacimiento": row[5],
     }    
 
-def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual, segundos_restante):
-    """Reloj visual que sigue corriendo en el navegador entre reruns (solo visual;
+def _renderizar_reloj_visual(segundos_nuestra, segundos_rival, estado_actual, duracion_periodo_seg=1200):
+    """Reloj visual que sigue sumando en el navegador entre reruns (solo visual;
     la fuente de verdad del cálculo real sigue siendo session_state en el servidor).
-    Muestra el tiempo restante del período (20:00 -> 0:00) en grande, con los
-    contadores de posesión propia/rival como referencia más chica al lado."""
+    Incluye además un contador regresivo con el tiempo restante del período (20 min reglamentarios)."""
     incrementa_nuestra = 1 if estado_actual == "Nosotros" else 0
     incrementa_rival = 1 if estado_actual == "Rival" else 0
-    incrementa_restante = 1 if estado_actual != "Pausa" else 0
+    incrementa_restante = 1 if estado_actual in ("Nosotros", "Rival") else 0
     html = f"""
-    <div style="display:flex; align-items:center; justify-content:center; gap:36px; font-family:monospace; padding:10px; flex-wrap:wrap;">
-        <div style="text-align:center;">
-            <div style="font-size:13px; color:#9ca3af; letter-spacing:1px;">⏳ TIEMPO RESTANTE</div>
-            <div id="reloj_restante" style="font-size:46px; font-weight:bold; color:#facc15; line-height:1.1;">00:00</div>
+    <div style="display:flex; gap:22px; justify-content:center; align-items:center; font-family:monospace; padding:8px; flex-wrap:wrap;">
+        <div style="font-size:26px; color:white;">🟢 <span id="reloj_nuestra">00:00</span></div>
+        <div style="background:#12141c; border:1px solid #2a2d3a; border-radius:12px; padding:8px 26px; text-align:center; min-width:160px;">
+            <div style="font-size:12px; letter-spacing:2px; color:#9CA3AF; margin-bottom:2px;">⏳ TIEMPO RESTANTE</div>
+            <div id="reloj_restante" style="font-size:44px; font-weight:700; color:#FFD166; line-height:1;">00:00</div>
         </div>
-        <div style="display:flex; gap:20px;">
-            <div style="text-align:center;">
-                <div style="font-size:12px; color:#9ca3af;">🟢 PROPIA</div>
-                <div id="reloj_nuestra" style="font-size:22px; color:white;">00:00</div>
-            </div>
-            <div style="text-align:center;">
-                <div style="font-size:12px; color:#9ca3af;">🔴 RIVAL</div>
-                <div id="reloj_rival" style="font-size:22px; color:white;">00:00</div>
-            </div>
-        </div>
+        <div style="font-size:26px; color:white;">🔴 <span id="reloj_rival">00:00</span></div>
     </div>
     <script>
     let segNuestra = {segundos_nuestra};
     let segRival = {segundos_rival};
-    let segRestante = {segundos_restante};
+    let segRestante = Math.max(0, {duracion_periodo_seg} - {segundos_nuestra} - {segundos_rival});
     const incNuestra = {incrementa_nuestra};
     const incRival = {incrementa_rival};
     const incRestante = {incrementa_restante};
     function formatear(s) {{
-        s = Math.max(0, s);
         const m = Math.floor(s / 60).toString().padStart(2, '0');
         const ss = Math.floor(s % 60).toString().padStart(2, '0');
         return m + ":" + ss;
     }}
-    function actualizar() {{
-        document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
-        document.getElementById("reloj_rival").innerText = formatear(segRival);
-        const elRestante = document.getElementById("reloj_restante");
-        elRestante.innerText = formatear(segRestante);
-        elRestante.style.color = segRestante <= 0 ? "#ef4444" : "#facc15";
-    }}
-    actualizar();
+    document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
+    document.getElementById("reloj_rival").innerText = formatear(segRival);
+    document.getElementById("reloj_restante").innerText = formatear(segRestante);
     setInterval(() => {{
+        if (segRestante <= 0) {{ return; }}
         segNuestra += incNuestra;
         segRival += incRival;
         segRestante = Math.max(0, segRestante - incRestante);
-        actualizar();
+        document.getElementById("reloj_nuestra").innerText = formatear(segNuestra);
+        document.getElementById("reloj_rival").innerText = formatear(segRival);
+        document.getElementById("reloj_restante").innerText = formatear(segRestante);
     }}, 1000);
     </script>
     """
-    components.html(html, height=110)
+    components.html(html, height=100)
 
 # =========================================================
 # COMPONENTES GRÁFICOS Y TRAZADO TÁCTICO FIEL A LA REFERENCIA
@@ -570,22 +594,24 @@ def selector_equipo_liga(etiqueta, key_prefix, indice_default=0):
 
 def dibujar_capas_cancha(fig):
     """Agrega las formas reglamentarias de una cancha de Futsal oficial (40x20m) sin textos internos.
-    Paleta clara (fondo blanco / áreas gris / líneas negras) — usada exclusivamente en los heatmaps
-    de Dashboard General y Rendimiento Individual."""
-    fig.add_shape(type="rect", x0=0, y0=0, x1=40, y1=20, fillcolor="#ffffff", line=dict(color="black", width=2.5), layer="below")
-    fig.add_shape(type="path", path="M 0,4 Q 6,4 6,10 Q 6,16 0,16 Z", fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
-    fig.add_shape(type="path", path="M 40,4 Q 34,4 34,10 Q 34,16 40,16 Z", fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
-    fig.add_shape(type="circle", x0=17, y0=7, x1=23, y1=13, fillcolor="#e0e0e0", line=dict(color="black", width=2), layer="below")
-    fig.add_shape(type="line", x0=20, y0=0, x1=20, y1=20, line=dict(color="black", width=2.5))
-    fig.add_trace(go.Scatter(x=[6, 10, 34, 30], y=[10, 10, 10, 10], mode="markers", marker=dict(color="black", size=5), showlegend=False, hoverinfo="skip"))
-    fig.add_shape(type="rect", x0=-1.5, y0=8.5, x1=0, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="black", width=2))
-    fig.add_shape(type="rect", x0=40, y0=8.5, x1=41.5, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="black", width=2))
+    Paleta oscura (fondo azul / áreas naranja / líneas grises) — la misma estética de la cancha de
+    carga de datos, usada en los heatmaps de Dashboard General y Rendimiento Individual."""
+    fig.add_shape(type="rect", x0=0, y0=0, x1=40, y1=20, fillcolor="#4158f6", line=dict(color="#9CA3AF", width=2.5), layer="below")
+    fig.add_shape(type="path", path="M 0,4 Q 6,4 6,10 Q 6,16 0,16 Z", fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="path", path="M 40,4 Q 34,4 34,10 Q 34,16 40,16 Z", fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="circle", x0=17, y0=7, x1=23, y1=13, fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="line", x0=20, y0=0, x1=20, y1=20, line=dict(color="#9CA3AF", width=2.5))
+    fig.add_trace(go.Scatter(x=[6, 10, 34, 30], y=[10, 10, 10, 10], mode="markers", marker=dict(color="#9CA3AF", size=5), showlegend=False, hoverinfo="skip"))
+    fig.add_shape(type="rect", x0=-1.5, y0=8.5, x1=0, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
+    fig.add_shape(type="rect", x0=40, y0=8.5, x1=41.5, y1=11.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
 
 
 def crear_figura_cancha():
     """Dibuja la cancha interactiva de Futsal limpia para la captura de datos tácticos."""
-    xs = list(range(1, 100, 2))  
-    ys = list(range(1, 60, 2))   
+    # Grilla fina (paso 1 en vez de paso 2) para que el clic capture coordenadas más precisas
+    # y los puntos no queden "cuadrados" al reescalar a metros reales.
+    xs = list(range(1, 100, 1))
+    ys = list(range(1, 60, 1))
     grid_x = [x for y in ys for x in xs]
     grid_y = [y for y in ys for x in xs]
 
@@ -594,20 +620,20 @@ def crear_figura_cancha():
     fig.add_trace(go.Scatter(
         x=grid_x, y=grid_y,
         mode="markers",
-        marker=dict(size=14, color="#4158f6", opacity=0.01),
+        marker=dict(size=9, color="#4158f6", opacity=0.01),
         hoverinfo="none",
         hovertemplate=None,
         showlegend=False,
         name="cancha_click"
     ))
 
-    fig.add_shape(type="rect", x0=0, y0=0, x1=100, y1=60, fillcolor="#4158f6", line=dict(color="white", width=2.5), layer="below")
-    fig.add_shape(type="path", path="M 0,12 Q 15,12 15,30 Q 15,48 0,48 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="path", path="M 100,12 Q 85,12 85,30 Q 85,48 100,48 Z", fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="circle", x0=42.5, y0=21, x1=57.5, y1=39, fillcolor="#e5a93c", line=dict(color="white", width=2), layer="below")
-    fig.add_shape(type="line", x0=50, y0=0, x1=50, y1=60, line=dict(color="white", width=2.5))
-    fig.add_shape(type="rect", x0=-3, y0=25.5, x1=0, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
-    fig.add_shape(type="rect", x0=100, y0=25.5, x1=103, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))
+    fig.add_shape(type="rect", x0=0, y0=0, x1=100, y1=60, fillcolor="#4158f6", line=dict(color="#9CA3AF", width=2.5), layer="below")
+    fig.add_shape(type="path", path="M 0,12 Q 15,12 15,30 Q 15,48 0,48 Z", fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="path", path="M 100,12 Q 85,12 85,30 Q 85,48 100,48 Z", fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="circle", x0=42.5, y0=21, x1=57.5, y1=39, fillcolor="#e5a93c", line=dict(color="#9CA3AF", width=2), layer="below")
+    fig.add_shape(type="line", x0=50, y0=0, x1=50, y1=60, line=dict(color="#9CA3AF", width=2.5))
+    fig.add_shape(type="rect", x0=-3, y0=25.5, x1=0, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
+    fig.add_shape(type="rect", x0=100, y0=25.5, x1=103, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
 
     fig.update_xaxes(range=[-5, 105], visible=False, fixedrange=True)
     fig.update_yaxes(range=[-3, 63], visible=False, fixedrange=True, scaleanchor="x")
@@ -666,18 +692,13 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
         if not df_cancha.empty:
             matriz, x_centros, y_centros = _matriz_densidad(df_cancha["x"].values, df_cancha["y"].values)
             max_val = np.max(matriz) if np.max(matriz) > 0 else 1
-            umbral = max_val * 0.05
 
-            # Enmascaramos las celdas de baja/nula densidad con NaN para que Plotly las
-            # deje transparentes, y así se vea la cancha (blanca/gris/negra) de fondo en
-            # vez de un tinte de color cubriendo toda la grilla.
-            matriz_visible = np.where(matriz >= umbral, matriz, np.nan)
-
+            # Puntos más chicos y sin borde, para no tapar el degradé de calor
             fig.add_trace(go.Heatmap(
-                x=x_centros, y=y_centros, z=matriz_visible,
-                colorscale="YlOrRd", opacity=0.85, showscale=True,
+                x=x_centros, y=y_centros, z=matriz,
+                colorscale="YlOrRd", opacity=0.90, showscale=True,
                 zsmooth="best", hoverinfo="skip", name="Densidad Táctica",
-                zmin=umbral, zmax=max_val
+                zmin=max_val * 0.05, zmax=max_val
             ))
 
             # Capa superior: un trace por tipo de evento, coloreado igual que el gráfico de barras
@@ -686,7 +707,7 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
                 fig.add_trace(go.Scatter(
                     x=df_tipo_ev["x"], y=df_tipo_ev["y"],
                     mode="markers",
-                    marker=dict(color=color_por_tipo_evento(tipo_ev), size=7, opacity=0.85, line=dict(color="black", width=1)),
+                    marker=dict(color=color_por_tipo_evento(tipo_ev), size=7, opacity=0.85, line=dict(color="white", width=0.5)),
                     text=df_tipo_ev["tipo_evento"].astype(str) + " - J" + df_tipo_ev["jugador"].astype(str),
                     hoverinfo="text", name=tipo_ev, showlegend=True
                 ))
@@ -702,7 +723,8 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
         title=dict(text=titulo_mapa, font=dict(size=15, color="white", family="Arial Black")),
         legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
                     font=dict(color="white", size=11), bgcolor="rgba(0,0,0,0)"),
-        showlegend=True
+        showlegend=True,
+        modebar=dict(remove=["zoom", "pan", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"])
     )
     return fig
 
@@ -782,7 +804,7 @@ def render_carga_datos(conn):
     with col_p3:
         rival = selector_equipo_liga("Equipo rival", "rival_partido", indice_default=1)
 
-    col_p4, col_p5 = st.columns(2)
+    col_p4, col_p5, col_p6 = st.columns(3)
     with col_p4:
         lado_inicio = st.selectbox(
             "En el 1T atacamos hacia:",
@@ -797,6 +819,11 @@ def render_carga_datos(conn):
         lugar = lugar_input.strip().upper()
         if lugar:
             st.caption(f"Se guardará como: **{lugar}**")
+    with col_p6:
+        competencia_input = st.text_input("Competencia / Torneo", key="competencia_partido", placeholder="Ej: Liga Nacional 2026")
+        competencia = competencia_input.strip().upper()
+        if competencia:
+            st.caption(f"Se guardará como: **{competencia}**")
 
     st.divider()
 
@@ -855,23 +882,29 @@ def render_carga_datos(conn):
         ahora = time.time()
         if st.session_state.pos_estado_actual != "Pausa" and st.session_state.pos_ultimo_click is not None:
             transcurrido = ahora - st.session_state.pos_ultimo_click
+            restante_disponible = DURACION_TOTAL_SEGUNDOS - (st.session_state[clave_propio] + st.session_state[clave_rival])
+            transcurrido = max(0.0, min(transcurrido, restante_disponible))
+
             if st.session_state.pos_estado_actual == "Nosotros":
                 st.session_state[clave_propio] += transcurrido
             elif st.session_state.pos_estado_actual == "Rival":
                 st.session_state[clave_rival] += transcurrido
             st.session_state.pos_ultimo_click = ahora
 
-        total_tiempo_neto = st.session_state[clave_propio] + st.session_state[clave_rival]
-        tiempo_restante_seg = max(0.0, DURACION_TIEMPO_SEG - total_tiempo_neto)
+            # Se agotaron los 20 minutos del tiempo: frenamos el reloj automáticamente
+            if st.session_state[clave_propio] + st.session_state[clave_rival] >= DURACION_TOTAL_SEGUNDOS:
+                st.session_state.pos_estado_actual = "Pausa"
+                st.session_state.pos_ultimo_click = None
+                st.rerun()
 
         _renderizar_reloj_visual(
             st.session_state[clave_propio],
             st.session_state[clave_rival],
             st.session_state.pos_estado_actual,
-            tiempo_restante_seg
+            duracion_periodo_seg=DURACION_TOTAL_SEGUNDOS
         )
 
-        c_pos1, c_pos2, c_spacer, c_pos3, c_pos4 = st.columns([1, 1, 1.4, 1, 1])
+        c_pos1, c_pos2, c_pos3, c_pos4 = st.columns([1.2, 1.2, 1.2, 1])
 
         with c_pos1:
             tipo_boton_nos = "primary" if st.session_state.pos_estado_actual == "Nosotros" else "secondary"
@@ -902,10 +935,11 @@ def render_carga_datos(conn):
                 st.session_state.pos_ultimo_click = None
                 st.rerun()
 
+        total_tiempo_neto = st.session_state[clave_propio] + st.session_state[clave_rival]
         pct_nuestro = (st.session_state[clave_propio] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
         pct_rival = (st.session_state[clave_rival] / total_tiempo_neto * 100) if total_tiempo_neto > 0 else 0
 
-        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+        col_res1, col_res2, col_res3 = st.columns(3)
         with col_res1:
             st.metric(f"⏱️ Nuestra Posesión ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_propio]), f"{pct_nuestro:.1f}%")
         with col_res2:
@@ -913,33 +947,22 @@ def render_carga_datos(conn):
             st.metric("Estado Reloj", f"{estado_icon} {st.session_state.pos_estado_actual.upper()}")
         with col_res3:
             st.metric(f"⏱️ Posesión Rival ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_rival]), f"{pct_rival:.1f}%", delta_color="inverse")
-        with col_res4:
-            st.metric(f"⏳ Tiempo Restante ({st.session_state.pos_tiempo_actual})", formatear_tiempo(tiempo_restante_seg))
-            if tiempo_restante_seg <= 0:
-                st.caption("⏰ Tiempo cumplido")
 
-    # ---------------------------------------------------------------
-    # BOTÓN GUARDAR: compartido por los dos modos (manual y reloj).
-    # Antes vivía adentro del 'else' del reloj, por eso no aparecía
-    # nunca cuando se activaba la carga manual de posesión.
-    # ---------------------------------------------------------------
+    # El botón de guardado queda fuera del if/else para funcionar tanto en modo manual como en modo reloj.
     if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
         if not rival:
             st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
-        elif "pos_1t_propio" not in st.session_state:
-            st.warning("⚠️ Todavía no hay datos de posesión cargados (ni manual ni por cronómetro).")
         else:
-            # Tanto el modo manual como el reloj dejan sus valores finales en las mismas
-            # claves de session_state ('pos_1t_propio', etc.), así que el guardado es único.
-            t1_propio = st.session_state["pos_1t_propio"]
-            t1_rival = st.session_state["pos_1t_rival"]
-            t2_propio = st.session_state["pos_2t_propio"]
-            t2_rival = st.session_state["pos_2t_rival"]
+            t1_propio = st.session_state.get("pos_1t_propio", 0.0)
+            t1_rival = st.session_state.get("pos_1t_rival", 0.0)
+            t2_propio = st.session_state.get("pos_2t_propio", 0.0)
+            t2_rival = st.session_state.get("pos_2t_rival", 0.0)
 
             guardar_posesion_partido(
                 conn, fecha, rival, equipo_propio, lugar, lado_inicio,
                 t1_propio, t1_rival,
-                t2_propio, t2_rival
+                t2_propio, t2_rival,
+                competencia=competencia
             )
             st.success("✅ Datos del partido y posesión guardados en la base de datos.")
 
@@ -951,17 +974,14 @@ def render_carga_datos(conn):
     with col1:
         tipo_evento = st.selectbox(
             "Tipo de evento",
-            ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "Tarjetas", "ABP"],
+            ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "ABP"],
             key="tipo_evento_rapido"
         )
     with col2:
-        opciones_jugador = [""] + [str(n) for n in range(1, 100)]
-        jugador = st.selectbox(
-            "Número de jugador", opciones_jugador,
-            key="jugador_rapido",
+        jugador = st.text_input(
+            "Número de jugador", key="jugador_rapido",
             disabled=(tipo_evento == "ABP"),
-            help="No aplica para ABP" if tipo_evento == "ABP" else None,
-            format_func=lambda v: "Seleccionar..." if v == "" else v
+            help="No aplica para ABP" if tipo_evento == "ABP" else None
         )
     with col3:
         tiempo = st.selectbox("Tiempo", ["1T", "2T"], key="tiempo_rapido")
@@ -969,20 +989,29 @@ def render_carga_datos(conn):
         equipo = st.selectbox("Equipo", ["Propio", "Rival"], key="equipo_rapido")
 
     resultado, tipo_tarjeta_sel = "", ""
-    tipo_abp_sel, lado_abp_sel = "", ""
+    tipo_abp_sel, lado_abp_sel, resultado_abp_sel = "", "", ""
 
     if tipo_evento == "Finalizaciones":
         resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
     elif tipo_evento == "Faltas":
         tipo_tarjeta_sel = st.selectbox("Tarjeta asociada a la falta", ["Sin tarjeta", "Amarilla", "Roja"], key="tipo_tarjeta_falta")
-    elif tipo_evento == "Tarjetas":
-        tipo_tarjeta_sel = st.selectbox("Tipo de tarjeta", ["Amarilla", "Roja"], key="tipo_tarjeta_rapido")
     elif tipo_evento == "ABP":
-        col_abp1, col_abp2 = st.columns(2)
+        col_abp1, col_abp2, col_abp3 = st.columns(3)
         with col_abp1:
-            tipo_abp_sel = st.selectbox("Tipo de ABP", ["Córner", "Tiro Libre", "Lateral zona alta"], key="tipo_abp_rapido")
+            tipo_abp_sel = st.selectbox(
+                "Tipo de ABP",
+                ["Córner", "Tiro Libre", "Lateral zona alta", "Tiro 10mtrs.", "Penal"],
+                key="tipo_abp_rapido"
+            )
         with col_abp2:
             lado_abp_sel = st.selectbox("Lado (ref.Ataque)", ["Derecho", "Izquierdo"], key="lado_abp_rapido")
+        with col_abp3:
+            if tipo_abp_sel == "Lateral zona alta":
+                st.selectbox("Resultado", ["(no aplica)"], key="resultado_abp_rapido_disabled", disabled=True,
+                             help="Un lateral zona alta no se registra como Gol.")
+                resultado_abp_sel = ""
+            else:
+                resultado_abp_sel = st.selectbox("Resultado", ["", "Gol"], key="resultado_abp_rapido")
 
     # -----------------------------------------------------
     # ABP: registro directo por botón (no requiere clic en cancha ni jugador)
@@ -992,10 +1021,11 @@ def render_carga_datos(conn):
         if st.button("➕ Registrar ABP", type="primary", use_container_width=True):
             insertar_evento_individual(
                 conn, fecha, rival, "ABP", tiempo, equipo,
-                jugador="", zona=lado_abp_sel, resultado=tipo_abp_sel,
-                tipo_tarjeta="", x=None, y=None
+                jugador="", zona=lado_abp_sel, resultado=resultado_abp_sel,
+                tipo_tarjeta="", tipo_abp=tipo_abp_sel, x=None, y=None
             )
-            st.success(f"✅ ABP registrado: {tipo_abp_sel} ({lado_abp_sel}) - {equipo} - {tiempo}")
+            mensaje_resultado = f" | Resultado: {resultado_abp_sel}" if resultado_abp_sel else ""
+            st.success(f"✅ ABP registrado: {tipo_abp_sel} ({lado_abp_sel}) - {equipo} - {tiempo}{mensaje_resultado}")
             st.rerun()
 
     # -----------------------------------------------------
@@ -1004,31 +1034,30 @@ def render_carga_datos(conn):
     else:
         st.info("💡 **Instrucciones:** Completá la info del jugador arriba y hacé **un clic directo** en la cancha táctica. El sistema procesará automáticamente el lado de ataque actual según tu configuración de sorteo.")
 
+        if "click_cancha_seq" not in st.session_state:
+            st.session_state["click_cancha_seq"] = 0
+
         fig_cancha = crear_figura_cancha()
 
-        # Contador para forzar un remount completo del gráfico después de cada evento
-        # registrado. Cambiar la 'key' obliga a Streamlit a destruir el componente viejo
-        # (que en el navegador podía retener visualmente el clic anterior) y crear uno
-        # 100% nuevo sin selección — a diferencia de borrar el session_state del mismo
-        # key, que dejaba el componente del navegador "vivo" y repitiendo el último clic.
-        if "click_cancha_reset_counter" not in st.session_state:
-            st.session_state["click_cancha_reset_counter"] = 0
-
+        # La key rota en cada registro exitoso: así el widget de Plotly nace "limpio" (sin selección
+        # previa) en cada nuevo ciclo, y cambiar el jugador/tiempo/equipo sin volver a clickear
+        # NO puede disparar un guardado con coordenadas viejas (bug conocido de Streamlit+Plotly,
+        # donde la selección queda pegada entre reruns si se reusa la misma key).
         evento_click = st.plotly_chart(
             fig_cancha, use_container_width=False,
             on_select="rerun", selection_mode="points",
-            key=f"click_cancha_{st.session_state['click_cancha_reset_counter']}"
+            key=f"click_cancha_{st.session_state['click_cancha_seq']}"
         )
 
         x_click, y_click = extraer_punto_click(evento_click)
 
         if x_click is not None and y_click is not None:
-            click_id = (x_click, y_click, tipo_evento, jugador, tiempo, equipo)
-
             if not jugador:
                 st.warning("⚠️ Ingresá el número de jugador antes de hacer clic en la cancha")
-            elif st.session_state.get("ultimo_click_registrado") != click_id:
-
+            else:
+                # La grilla de clic tiene una resolución fija; la zona se calcula sobre el punto
+                # original y luego agregamos una pequeña variación natural (dentro de la misma
+                # celda) para que las coordenadas guardadas no queden "cuadradas" al graficarlas.
                 es_1t_y_ataca_izquierda = (tiempo == "1T" and "Izquierda" in lado_inicio)
                 es_2t_y_ataca_izquierda = (tiempo == "2T" and "Derecha" in lado_inicio)
 
@@ -1041,8 +1070,11 @@ def render_carga_datos(conn):
                     x_guardar = x_click
                     y_guardar = y_click
 
+                x_guardar = float(np.clip(x_guardar + np.random.uniform(-0.4, 0.4), 0, 100))
+                y_guardar = float(np.clip(y_guardar + np.random.uniform(-0.4, 0.4), 0, 60))
+
                 tipo_tarjeta_final = ""
-                if tipo_evento in ("Faltas", "Tarjetas") and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
+                if tipo_evento == "Faltas" and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
                     tipo_tarjeta_final = resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sel)
 
                 insertar_evento_individual(
@@ -1050,14 +1082,9 @@ def render_carga_datos(conn):
                     jugador, zona, resultado, tipo_tarjeta_final, x=x_guardar, y=y_guardar
                 )
 
-                st.session_state["ultimo_click_registrado"] = click_id
+                st.session_state["click_cancha_seq"] += 1
                 mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
                 st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
-
-                # Incrementamos el contador para que el próximo render use una key nueva
-                # (nuevo componente, sin ninguna selección previa).
-                st.session_state["click_cancha_reset_counter"] += 1
-
                 st.rerun()
         else:
             st.caption("📍 Esperando clic posicional...")
@@ -1120,21 +1147,18 @@ def render_dashboard_general(conn):
 
     # --- INDICADORES ---
     st.divider()
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Acciones Filtradas", len(df_filtrado))
     with col2:
-        total_finalizaciones = len(df_filtrado[df_filtrado["tipo_evento"] == "Finalizaciones"])
-        st.metric("Cantidad de Finalizaciones", total_finalizaciones)
-    with col3:
         # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
-        tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado"]))])
-        st.metric("Goles/Tiros al Arco", tiros_efectivos)
+        tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
+        st.metric("Cantidad de finalizaciones", tiros_efectivos)
+    with col3:
+        st.metric("Pelotas Perdidas", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
     with col4:
-        st.metric("Balones Perdidos", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]))
-    with col5:
         st.metric("Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]))
-    with col6:
+    with col5:
         st.metric("ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]))
 
     # --- TENENCIA DE LA PELOTA ---
@@ -1246,11 +1270,18 @@ def render_dashboard_general(conn):
         df_abp = df_filtrado[df_filtrado["tipo_evento"] == "ABP"]
         if not df_abp.empty:
             st.divider()
-            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales zona alta)")
-            col_tipo_abp, col_lado_abp = st.columns(2)
+            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales / 10mts. / Penales)")
+
+            # Compatibilidad con datos viejos: si tipo_abp está vacío, se usaba antes el campo 'resultado'
+            # para guardar el subtipo de ABP.
+            tipo_abp_series = df_abp["tipo_abp"].replace("", pd.NA) if "tipo_abp" in df_abp.columns else pd.Series(dtype=object)
+            if "resultado" in df_abp.columns:
+                tipo_abp_series = tipo_abp_series.fillna(df_abp["resultado"])
+
+            col_tipo_abp, col_lado_abp, col_goles_abp = st.columns(3)
             with col_tipo_abp:
                 st.markdown("#### 📋 Por Tipo de ABP")
-                tipo_abp_counts = df_abp["resultado"].fillna("Sin especificar").value_counts().reset_index()
+                tipo_abp_counts = tipo_abp_series.fillna("Sin especificar").value_counts().reset_index()
                 tipo_abp_counts.columns = ["Tipo de ABP", "Cantidad"]
                 fig_abp_tipo = px.bar(
                     tipo_abp_counts, x="Tipo de ABP", y="Cantidad", color="Tipo de ABP",
@@ -1268,6 +1299,14 @@ def render_dashboard_general(conn):
                 )
                 fig_abp_lado.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_abp_lado, use_container_width=True, key="abp_por_lado")
+            with col_goles_abp:
+                st.markdown("#### ⚽ Goles de ABP")
+                goles_abp = int((df_abp["resultado"] == "Gol").sum())
+                st.metric("Goles convertidos desde ABP", goles_abp)
+                if goles_abp > 0:
+                    goles_abp_tipo = tipo_abp_series[df_abp["resultado"] == "Gol"].fillna("Sin especificar").value_counts().reset_index()
+                    goles_abp_tipo.columns = ["Tipo de ABP", "Goles"]
+                    st.dataframe(goles_abp_tipo, use_container_width=True, hide_index=True)
 
     # --- ANÁLISIS DE PÉRDIDAS Y RECUPEROS POR ZONA + TOP 3 ---
     if not df_filtrado.empty:
@@ -1341,11 +1380,7 @@ def render_rendimiento_individual(conn):
     df_base_equipo = df_eventos[df_eventos["equipo"] == equipo_sel]
     
     with col_f2:
-       # Orden numérico (1, 2, 3...99) en vez de alfabético (1, 10, 2, 3...)
-       jugadores_disponibles = sorted(
-           df_base_equipo["jugador"].dropna().unique(),
-           key=lambda v: (0, int(v)) if str(v).isdigit() else (1, str(v))
-       )
+       jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique())
        jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
 
     df_base_jugador = df_base_equipo[df_base_equipo["jugador"] == jugador_sel]
@@ -1357,10 +1392,10 @@ def render_rendimiento_individual(conn):
     with col_f4:
         tiempos_disponibles = ["Todos"] + list(df_base_jugador["tiempo"].dropna().unique())
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles, key="rend_tiempo_sel")
-
+        
     with col_f5:
-        tipos_evento_disponibles = ["Todos"] + sorted(df_base_jugador["tipo_evento"].dropna().unique())
-        tipo_evento_sel = st.selectbox("Filtrar por Tipo de Acción", tipos_evento_disponibles, key="rend_tipo_evento_sel")
+        tipos_disponibles = ["Todos"] + sorted(list(df_base_jugador["tipo_evento"].dropna().unique()))
+        tipo_evento_sel = st.selectbox("Filtrar por Tipo de Evento", tipos_disponibles, key="rend_tipo_evento_sel")
 
     df_jugador_filtrado = df_base_jugador.copy()
     if partido_sel != "Todos":
@@ -1388,24 +1423,21 @@ def render_rendimiento_individual(conn):
 
     # --- TARJETAS DE MÉTRICAS INDIVIDUALES ---
     st.markdown(f"### 📈 Estadísticas Clave: Jugador {jugador_sel} ({equipo_sel})")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     
     with m1:
         total_acciones = len(df_jugador_filtrado)
         st.metric("Total Acciones", total_acciones)
     with m2:
-        total_finalizaciones_j = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Finalizaciones"])
-        st.metric("Cantidad de Finalizaciones", total_finalizaciones_j)
-    with m3:
         # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
-        goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado"]))])
-        st.metric("Tiros al Arco", goles_tiros)
+        goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
+        st.metric("Cantidad de Finalizaciones", goles_tiros)
+    with m3:
+        perdidas = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"])
+        st.metric("Pelotas Perdidas", perdidas)
     with m4:
         recuperos = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"])
         st.metric("Recuperaciones", recuperos)
-    with m5:
-        perdidas = len(df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"])
-        st.metric("Pérdidas de Balón", perdidas)
 
     st.divider()
 
@@ -1476,42 +1508,107 @@ def render_jugadores(conn, rol_actual):
     nombres_tabs = ["📋 Ver Plantel", "➕ Agregar Jugador", "✏️ Editar / Baja"] if puede_editar else ["📋 Ver Plantel"]
     tabs = st.tabs(nombres_tabs)
 
-    # -----------------------------------------------------
+# -----------------------------------------------------
     # TAB: VER PLANTEL
     # -----------------------------------------------------
-    with tabs[0]:
-        df_jug = cargar_jugadores_df(conn)
-        if df_jug is None:
-            st.info("Todavía no cargaste jugadores en el plantel.")
+    with tabs[0]:  # Asumiendo que es la primera pestaña
+        st.subheader("📋 Plantel Actual")
+        df_plantel = cargar_jugadores_df(conn)
+        
+        if df_plantel is None or df_plantel.empty:
+            st.info("No hay jugadores registrados en el plantel.")
         else:
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                pos_filtro = st.selectbox("Filtrar por posición", ["Todas"] + POSICIONES, key="jug_filtro_pos")
-            with col_f2:
-                estado_filtro = st.selectbox("Filtrar por estado", ["Todos"] + ESTADOS, key="jug_filtro_estado")
+            # Filtro opcional de búsqueda rápida
+            busqueda = st.text_input("🔍 Buscar por nombre, apellido o DNI", key="busqueda_plantel")
+            
+            df_filtrado = df_plantel.copy()
+            if busqueda:
+                mask = (
+                    df_filtrado["nombre"].str.contains(busqueda, case=False, na=False) |
+                    df_filtrado["apellido"].str.contains(busqueda, case=False, na=False) |
+                    df_filtrado["dni"].str.contains(busqueda, case=False, na=False)
+                )
+                df_filtrado = df_filtrado[mask]
 
-            df_vista = df_jug.copy()
-            if pos_filtro != "Todas":
-                df_vista = df_vista[df_vista["posicion"] == pos_filtro]
-            if estado_filtro != "Todos":
-                df_vista = df_vista[df_vista["estado"] == estado_filtro]
+            if df_filtrado.empty:
+                st.warning("No se encontraron jugadores con ese criterio.")
+            else:
+                # Opciones para seleccionar el jugador del cual ver la ficha en detalle
+                opciones_plantel = {
+                    f"#{int(r['numero_camiseta']) if pd.notna(r['numero_camiseta']) else '-'} - {r['apellido']}, {r['nombre']} (DNI {r['dni']})": r["id"]
+                    for _, r in df_filtrado.iterrows()
+                }
+                
+                # Selector para "hacer clic/elegir" al jugador que querés detallar
+                seleccion_ver = st.selectbox(
+                    "Seleccioná un jugador de la lista para ver su ficha completa:", 
+                    list(opciones_plantel.keys()), 
+                    key="select_ver_jugador_detalle"
+                )
+                
+                jugador_id_ver = opciones_plantel[seleccion_ver]
+                j_det = df_filtrado[df_filtrado["id"] == jugador_id_ver].iloc[0]
 
-            st.caption(f"{len(df_vista)} jugador/es en el plantel")
-            st.divider()
+                st.divider()
 
-            columnas = st.columns(5)
-            for i, (_, jug) in enumerate(df_vista.iterrows()):
-                with columnas[i % 5]:
-                    with st.container(border=True):
-                        if jug["foto_path"] and os.path.exists(jug["foto_path"]):
-                            st.image(jug["foto_path"], use_container_width=True)
-                        else:
-                            st.markdown("### 👤")
-                        edad = calcular_edad(jug["fecha_nacimiento"])
-                        st.markdown(f"**#{int(jug['numero_camiseta']) if pd.notna(jug['numero_camiseta']) else '-'} {jug['apellido']}, {jug['nombre']}**")
-                        st.caption(f"{jug['posicion'] or '-'} · {edad if edad is not None else '-'} años")
-                        st.caption(f"COMET: {jug['comet'] or '—'}")
-                        st.caption(f"{COLOR_ESTADO.get(jug['estado'], '⚪')} {jug['estado']}")
+                # --- VISTA DE DETALLE (SOLO LECTURA) ---
+                col_foto, col_info = st.columns([1, 2])
+
+                with col_foto:
+                    st.markdown("### 🖼️ Foto")
+                    ruta_foto = j_det.get("foto_path")
+                    if ruta_foto and os.path.exists(ruta_foto):
+                        st.image(ruta_foto, caption=f"{j_det['apellido']}, {j_det['nombre']}", use_container_width=True)
+                    else:
+                        st.info("Sin foto registrada")
+
+                with col_info:
+                    st.markdown(f"### 👤 {j_det['apellido']}, {j_det['nombre']}")
+                    estado_jug = j_det.get('estado', 'Activo')
+                    color_estado = "green" if estado_jug == "Activo" else "orange"
+                    st.markdown(f"**Estado:** :{color_estado}[{estado_jug}]")
+                    
+                    # Datos principales en métricas o columnas de texto fijo
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Camiseta", int(j_det['numero_camiseta']) if pd.notna(j_det['numero_camiseta']) else "-")
+                    m2.metric("Posición", j_det.get('posicion', '-'))
+                    m3.metric("Edad / Nac.", f"{j_det.get('fecha_nacimiento', '-')}")
+
+                st.markdown("---")
+                
+                # Pestañas internas de información en modo lectura
+                tab_dat, tab_med, tab_obs = st.tabs(["📄 Datos Personales", "🏥 Datos Médicos y Contacto", "📝 Observaciones"])
+
+                with tab_dat:
+                    d1, d2 = st.columns(2)
+                    with d1:
+                        st.text_input("DNI", value=str(j_det.get('dni', '')), disabled=True, key="ver_dni")
+                        st.text_input("Nº COMET", value=str(j_det.get('comet', '')), disabled=True, key="ver_comet")
+                        st.text_input("Pie hábil", value=str(j_det.get('pie_habil', '')), disabled=True, key="ver_pie")
+                    with d2:
+                        st.text_input("Teléfono", value=str(j_det.get('telefono', '')), disabled=True, key="ver_tel")
+                        st.text_input("Dirección", value=str(j_det.get('direccion', '')), disabled=True, key="ver_direccion")
+
+                with tab_med:
+                    e1, e2 = st.columns(2)
+                    with e1:
+                        st.text_input("Grupo Sanguíneo", value=str(j_det.get('grupo_sanguineo', '')), disabled=True, key="ver_gs")
+                        st.text_input("Obra Social", value=str(j_det.get('obra_social', '')), disabled=True, key="ver_os")
+                    with e2:
+                        st.text_input("Contacto de Emergencia", value=str(j_det.get('contacto_emergencia_nombre', '')), disabled=True, key="ver_c_nombre")
+                        st.text_input("Teléfono de Emergencia", value=str(j_det.get('contacto_emergencia_telefono', '')), disabled=True, key="ver_c_tel")
+
+                with tab_obs:
+                    st.text_area("Notas / Observaciones", value=str(j_det.get('observaciones', '')), disabled=True, key="ver_obs_text")
+
+                st.markdown("---")
+                
+                # Opcional: Mostrar una tabla resumida abajo de todos por si quieren ver los datos generales rápido
+                with st.expander("Ver tabla completa de resumen del plantel"):
+                    columnas_mostrar = ["numero_camiseta", "apellido", "nombre", "posicion", "edad", "telefono", "estado"]
+                    # Filtramos las columnas que realmente existan en el dataframe
+                    cols_disponibles = [c for c in columnas_mostrar if c in df_filtrado.columns]
+                    st.dataframe(df_filtrado[cols_disponibles], use_container_width=True)
 
     # -----------------------------------------------------
     # TAB: AGREGAR JUGADOR (solo Administrador)
@@ -1519,35 +1616,35 @@ def render_jugadores(conn, rol_actual):
     if puede_editar:
         with tabs[1]:
             st.subheader("Nueva ficha de jugador")
-            with st.form("form_nuevo_jugador", clear_on_submit=False):
+            with st.form("form_nuevo_jugador", clear_on_submit=True):
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    nombre = st.text_input("Nombre*", key="nuevo_jug_nombre")
-                    dni = st.text_input("DNI*", key="nuevo_jug_dni")
-                    comet = st.text_input("Número de COMET", key="nuevo_jug_comet")
+                    nombre = st.text_input("Nombre*")
+                    dni = st.text_input("DNI*")
+                    comet = st.text_input("Número de COMET")
                 with c2:
-                    apellido = st.text_input("Apellido*", key="nuevo_jug_apellido")
-                    fecha_nac = st.date_input("Fecha de nacimiento", min_value=date(1970, 1, 1), max_value=date.today(), key="nuevo_jug_fecha_nac")
-                    numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1, key="nuevo_jug_numero")
+                    apellido = st.text_input("Apellido*")
+                    fecha_nac = st.date_input("Fecha de nacimiento", min_value=date(1970, 1, 1), max_value=date.today())
+                    numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1)
                 with c3:
-                    posicion = st.selectbox("Posición", POSICIONES, key="nuevo_jug_posicion")
-                    pie_habil = st.selectbox("Pie hábil", PIES, key="nuevo_jug_pie")
-                    estado = st.selectbox("Estado", ESTADOS, key="nuevo_jug_estado")
+                    posicion = st.selectbox("Posición", POSICIONES)
+                    pie_habil = st.selectbox("Pie hábil", PIES)
+                    estado = st.selectbox("Estado", ESTADOS)
 
                 st.markdown("**Datos de contacto y salud**")
                 c4, c5, c6 = st.columns(3)
                 with c4:
-                    telefono = st.text_input("Teléfono", key="nuevo_jug_telefono")
-                    direccion = st.text_input("Dirección", key="nuevo_jug_direccion")
+                    telefono = st.text_input("Teléfono")
+                    direccion = st.text_input("Dirección")
                 with c5:
-                    grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, key="nuevo_jug_grupo")
-                    obra_social = st.text_input("Obra social", key="nuevo_jug_obra_social")
+                    grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS)
+                    obra_social = st.text_input("Obra social")
                 with c6:
-                    contacto_emerg_nombre = st.text_input("Contacto de emergencia", key="nuevo_jug_contacto_nombre")
-                    contacto_emerg_tel = st.text_input("Teléfono de emergencia", key="nuevo_jug_contacto_tel")
+                    contacto_emerg_nombre = st.text_input("Contacto de emergencia")
+                    contacto_emerg_tel = st.text_input("Teléfono de emergencia")
 
-                observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)", key="nuevo_jug_observaciones")
-                foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"], key="nuevo_jug_foto")
+                observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)")
+                foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"])
 
                 enviado = st.form_submit_button("💾 Guardar jugador", type="primary", use_container_width=True)
 
@@ -1555,7 +1652,7 @@ def render_jugadores(conn, rol_actual):
                     if not nombre or not apellido or not dni:
                         st.warning("⚠️ Nombre, Apellido y DNI son obligatorios.")
                     elif dni_ya_existe(conn, dni):
-                        st.error("❌ Ya existe un jugador cargado con ese DNI. Corregilo abajo y volvé a guardar — el resto de los datos que cargaste se mantiene.")
+                        st.error("❌ Ya existe un jugador cargado con ese DNI.")
                     else:
                         foto_path = guardar_foto_jugador(foto, dni)
                         insertar_jugador(conn, {
@@ -1568,19 +1665,6 @@ def render_jugadores(conn, rol_actual):
                             "foto_path": foto_path, "observaciones": observaciones,
                         })
                         st.success(f"✅ {nombre} {apellido} agregado al plantel.")
-
-                        # Recién ahora, con el guardado confirmado, limpiamos el formulario a mano
-                        # (clear_on_submit está apagado a propósito para no perder datos si el
-                        # DNI viene duplicado u otra validación falla).
-                        for campo_key in [
-                            "nuevo_jug_nombre", "nuevo_jug_dni", "nuevo_jug_comet", "nuevo_jug_apellido",
-                            "nuevo_jug_fecha_nac", "nuevo_jug_numero", "nuevo_jug_posicion", "nuevo_jug_pie",
-                            "nuevo_jug_estado", "nuevo_jug_telefono", "nuevo_jug_direccion", "nuevo_jug_grupo",
-                            "nuevo_jug_obra_social", "nuevo_jug_contacto_nombre", "nuevo_jug_contacto_tel",
-                            "nuevo_jug_observaciones", "nuevo_jug_foto",
-                        ]:
-                            if campo_key in st.session_state:
-                                del st.session_state[campo_key]
                         st.rerun()
 
     # -----------------------------------------------------
@@ -1596,11 +1680,13 @@ def render_jugadores(conn, rol_actual):
                     f"#{int(r['numero_camiseta']) if pd.notna(r['numero_camiseta']) else '-'} - {r['apellido']}, {r['nombre']} (DNI {r['dni']})": r["id"]
                     for _, r in df_jug_edit.iterrows()
                 }
-                seleccion = st.selectbox("Seleccioná un jugador", list(opciones.keys()), key="jug_edit_sel")
+                
+                # ⭐ SOLUCIÓN: Agregamos una key única para evitar que el selectbox bloquee el formulario
+                seleccion = st.selectbox("Seleccioná un jugador", list(opciones.keys()), key="jug_edit_selector_unico")
                 jugador_id = opciones[seleccion]
                 jug = df_jug_edit[df_jug_edit["id"] == jugador_id].iloc[0]
 
-                with st.form("form_editar_jugador"):
+                with st.form(f"form_editar_jugador_{jugador_id}"):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         nombre = st.text_input("Nombre*", value=jug["nombre"])
@@ -1611,35 +1697,36 @@ def render_jugadores(conn, rol_actual):
                         fecha_nac = st.date_input("Fecha de nacimiento", value=pd.to_datetime(jug["fecha_nacimiento"]).date() if jug["fecha_nacimiento"] else date.today())
                         numero_camiseta = st.number_input("Número de camiseta", min_value=0, max_value=99, step=1, value=int(jug["numero_camiseta"]) if pd.notna(jug["numero_camiseta"]) else 0)
                     with c3:
-                        posicion = st.selectbox("Posición", POSICIONES, index=POSICIONES.index(jug["posicion"]) if jug["posicion"] in POSICIONES else 0)
-                        pie_habil = st.selectbox("Pie hábil", PIES, index=PIES.index(jug["pie_habil"]) if jug["pie_habil"] in PIES else 0)
-                        estado = st.selectbox("Estado", ESTADOS, index=ESTADOS.index(jug["estado"]) if jug["estado"] in ESTADOS else 0)
+                        posicion = st.selectbox("Posición", POSICIONES, index=POSICIONES.index(jug["posicion"]) if jug["posicion"] in POSICIONES else 0, key=f"edit_pos_{jugador_id}")
+                        pie_habil = st.selectbox("Pie hábil", PIES, index=PIES.index(jug["pie_habil"]) if jug["pie_habil"] in PIES else 0, key=f"edit_pie_{jugador_id}")
+                        estado = st.selectbox("Estado", ESTADOS, index=ESTADOS.index(jug["estado"]) if jug["estado"] in ESTADOS else 0, key=f"edit_est_{jugador_id}")
 
                     c4, c5, c6 = st.columns(3)
                     with c4:
                         telefono = st.text_input("Teléfono", value=jug["telefono"] or "")
                         direccion = st.text_input("Dirección", value=jug["direccion"] or "")
                     with c5:
-                        grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, index=GRUPOS_SANGUINEOS.index(jug["grupo_sanguineo"]) if jug["grupo_sanguineo"] in GRUPOS_SANGUINEOS else 8)
+                        grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, index=GRUPOS_SANGUINEOS.index(jug["grupo_sanguineo"]) if jug["grupo_sanguineo"] in GRUPOS_SANGUINEOS else 8, key=f"edit_gs_{jugador_id}")
                         obra_social = st.text_input("Obra social", value=jug["obra_social"] or "")
                     with c6:
                         contacto_emerg_nombre = st.text_input("Contacto de emergencia", value=jug["contacto_emergencia_nombre"] or "")
                         contacto_emerg_tel = st.text_input("Teléfono de emergencia", value=jug["contacto_emergencia_telefono"] or "")
 
                     observaciones = st.text_area("Observaciones", value=jug["observaciones"] or "")
-                    nueva_foto = st.file_uploader("Reemplazar foto (opcional)", type=["jpg", "jpeg", "png"])
+                    nueva_foto = st.file_uploader("Reemplazar foto (opcional)", type=["jpg", "jpeg", "png"], key=f"edit_foto_{jugador_id}")
 
                     col_upd, col_baja = st.columns(2)
                     with col_upd:
                         actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True)
                     with col_baja:
-                        confirmar_baja = st.checkbox("Confirmo la baja de este jugador")
+                        confirmar_baja = st.checkbox("Confirmo la baja de este jugador", key=f"edit_baja_chk_{jugador_id}")
                         dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True)
 
                     if actualizar:
                         if dni_ya_existe(conn, dni, excluir_id=jugador_id):
                             st.error("❌ Ese DNI ya pertenece a otro jugador.")
                         else:
+                            # Al subir la nueva foto, automáticamente aplicará el recorte cuadrado de 320x320 píxeles que definimos antes
                             foto_path = guardar_foto_jugador(nueva_foto, dni) if nueva_foto else None
                             actualizar_jugador(conn, jugador_id, {
                                 "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
@@ -1650,7 +1737,7 @@ def render_jugadores(conn, rol_actual):
                                 "contacto_emergencia_telefono": contacto_emerg_tel, "estado": estado,
                                 "foto_path": foto_path, "observaciones": observaciones,
                             })
-                            st.success("✅ Ficha actualizada.")
+                            st.success("✅ Ficha actualizada correctamente con el nuevo recorte.")
                             st.rerun()
 
                     if dar_baja:
@@ -1667,19 +1754,6 @@ def render_jugadores(conn, rol_actual):
 def main():
     conn = get_connection()
     init_db(conn)
-
-    # CSS global: pestañas con más presencia visual (texto más grande y en negrita)
-    st.markdown("""
-    <style>
-    button[data-baseweb="tab"] {
-        padding: 14px 22px !important;
-    }
-    button[data-baseweb="tab"] p {
-        font-size: 20px !important;
-        font-weight: 700 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
     # ⭐ CORRECCIÓN SEGURIDAD: Inicializar estado antes del chequeo para evitar renderizado huérfano
     if "usuario_logueado" not in st.session_state:
