@@ -27,6 +27,22 @@ DURACION_TOTAL_SEGUNDOS = 1200
 LOGO_PATH = "imagenes/logo.png"
 LOGO_DISPONIBLE = os.path.exists(LOGO_PATH)
 
+# Rutas de las imágenes de fondo/branding entregadas por el DT (respetan los nombres
+# exactos con espacios que ya existen en la carpeta imagenes/ del repo).
+FONDO_LOGIN_PATH = "imagenes/Copia de Fondo-01.png"
+BANNER_HEADER_PATH = "imagenes/Copia de Fondo-02.jpg"
+LOGO_SIDEBAR_PATH = "imagenes/Logo_RGB_Fondo Transparente_FutsalIQ solo_Negro.png"
+LOGO_LOGIN_PATH = "imagenes/Logo_RGB_Fondo Negro_FutsalIQ.jpg"
+
+
+def imagen_a_base64(path):
+    """Devuelve el string base64 de una imagen local, o None si no existe.
+    Usado para inyectar fondos/logos vía CSS sin romper nada si falta el archivo."""
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -54,9 +70,14 @@ st.markdown("""
 .stTabs [data-baseweb="tab"] p {
     font-size: 20px;
     font-weight: 700;
+    color: #D1D5DB;
 }
 .stTabs [aria-selected="true"] {
-    background-color: rgba(255, 107, 107, 0.15);
+    background-color: rgba(141, 198, 63, 0.16);
+    border-bottom: 3px solid #8DC63F;
+}
+.stTabs [aria-selected="true"] p {
+    color: #FFFFFF;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -80,15 +101,31 @@ def verificar_usuario(conn, usuario, clave):
 
 
 def mostrar_login(conn):
-    """Muestra un formulario estético de Login con el logo de Futsal IQ centrado."""
-    
+    """Muestra un formulario estético de Login con el logo de Futsal IQ centrado
+    sobre un fondo de cancha con overlay oscuro (solo visual, no afecta el resto
+    de la app: el fondo se inyecta acá y no queda pegado en las demás pestañas)."""
+
+    fondo_b64 = imagen_a_base64(FONDO_LOGIN_PATH)
+    if fondo_b64:
+        st.markdown(f"""
+        <style>
+        [data-testid="stAppViewContainer"] {{
+            background-image: linear-gradient(rgba(6,7,10,0.88), rgba(6,7,10,0.92)),
+                               url("data:image/png;base64,{fondo_b64}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+
     # Contenedor central para alinear mejor los elementos
     col1, col2, col3 = st.columns([1, 1.5, 1])
     
     with col2:
         # Mostramos tu logo apuntando a la nueva carpeta 'imagenes'
         # (Asegurate de que el archivo se llame exactamente igual o reemplazá el nombre)
-        st.image("imagenes/Logo_RGB_Fondo Negro_FutsalIQ.jpg", use_container_width=True)
+        st.image(LOGO_LOGIN_PATH, use_container_width=True)
         
         st.markdown("<h3 style='text-align: center; color: #FFFFFF;'>Acceso al Sistema</h3>", unsafe_allow_html=True)
         
@@ -484,6 +521,21 @@ def dni_ya_existe(conn, dni, excluir_id=None):
     return c.fetchone()[0] > 0
 
 
+def buscar_jugador_por_dni(conn, dni, excluir_id=None):
+    """Devuelve (id, nombre, apellido, activo) del jugador con ese DNI si existe (esté
+    activo o dado de baja), o None. Se usa para explicar por qué un DNI está 'ocupado'
+    cuando el jugador dueño de ese DNI no aparece en el plantel (por estar de baja)."""
+    c = conn.cursor()
+    if excluir_id is not None:
+        c.execute("SELECT id, nombre, apellido, activo FROM jugadores WHERE dni = ? AND id != ?", (dni, excluir_id))
+    else:
+        c.execute("SELECT id, nombre, apellido, activo FROM jugadores WHERE dni = ?", (dni,))
+    row = c.fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "nombre": row[1], "apellido": row[2], "activo": row[3]}
+
+
 def insertar_jugador(conn, datos):
     """Inserta un nuevo jugador. `datos` es un dict con las claves de la tabla."""
     c = conn.cursor()
@@ -535,6 +587,15 @@ def dar_baja_jugador(conn, jugador_id):
     """Borrado lógico: no elimina el registro, lo marca inactivo para preservar el historial."""
     c = conn.cursor()
     c.execute("UPDATE jugadores SET activo = 0, estado = 'Inactivo' WHERE id = ?", (jugador_id,))
+    conn.commit()
+
+
+def reactivar_jugador(conn, jugador_id):
+    """Revierte una baja lógica: vuelve a marcar al jugador como activo y habilitado.
+    Es el único camino para liberar su ficha (y su DNI, que es UNIQUE en la tabla)
+    sin perder el historial de eventos ya cargados a su nombre."""
+    c = conn.cursor()
+    c.execute("UPDATE jugadores SET activo = 1, estado = 'Habilitado' WHERE id = ?", (jugador_id,))
     conn.commit()
 
 def buscar_jugador_por_numero(conn, numero_camiseta):
@@ -827,9 +888,9 @@ def generar_heatmap_analisis(df_filtrado, titulo_mapa="Mapa de Densidad",
 
     fig.update_layout(
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        width=800, height=400, margin=dict(l=10, r=10, t=40, b=10),
+        width=800, height=480, margin=dict(l=10, r=10, t=40, b=100),
         title=dict(text=titulo_mapa, font=dict(size=15, color="white", family="Arial Black")),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5,
                     font=dict(color="white", size=11), bgcolor="rgba(0,0,0,0)"),
         showlegend=True,
         modebar=dict(remove=["zoom", "pan", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"])
@@ -1483,10 +1544,10 @@ def render_dashboard_general(conn):
                     hole=0.4
                 )
                 fig_torta.update_layout(
-                    height=240, 
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5,
-                                font=dict(size=10)),
+                    height=300, 
+                    margin=dict(t=10, b=70, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
+                                font=dict(size=12, weight="bold")),
                     showlegend=True
                 )
                 st.plotly_chart(fig_torta, use_container_width=True)
@@ -1628,8 +1689,13 @@ def render_rendimiento_individual(conn):
     df_base_equipo = df_eventos[df_eventos["equipo"] == equipo_sel]
     
     with col_f2:
-       jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique())
-       jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
+       # Intentamos ordenar numéricamente si es posible, o por texto de forma ascendente (menor a mayor)
+        try:
+            jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique(), key=lambda x: (int(x) if str(x).isdigit() else 0, str(x)))
+        except:
+            jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique())
+            
+        jugador_sel = st.selectbox("Seleccionar Jugador", jugadores_disponibles, key="rend_indiv_sel")
 
     df_base_jugador = df_base_equipo[df_base_equipo["jugador"] == jugador_sel]
 
@@ -1748,9 +1814,9 @@ def render_rendimiento_individual(conn):
                     hole=0.4
                 )
                 fig_torta_j.update_layout(
-                    height=240, 
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                    height=300, 
+                    margin=dict(t=10, b=70, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
                 )
                 st.plotly_chart(fig_torta_j, use_container_width=True, key="torta_individual_finalizaciones")
 
@@ -1913,33 +1979,46 @@ def render_jugadores(conn, rol_actual):
                 if enviado:
                     if not nombre or not apellido or not dni:
                         st.warning("⚠️ Nombre, Apellido y DNI son obligatorios.")
-                    elif dni_ya_existe(conn, dni):
-                        st.error("❌ Ya existe un jugador cargado con ese DNI.")
                     else:
-                        foto_path = guardar_foto_jugador(foto, dni)
-                        insertar_jugador(conn, {
-                            "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
-                            "fecha_nacimiento": str(fecha_nac), "numero_camiseta": numero_camiseta,
-                            "posicion": posicion, "pie_habil": pie_habil, "grupo_sanguineo": grupo_sanguineo,
-                            "obra_social": obra_social, "telefono": telefono, "direccion": direccion,
-                            "contacto_emergencia_nombre": contacto_emerg_nombre,
-                            "contacto_emergencia_telefono": contacto_emerg_tel, "estado": estado,
-                            "foto_path": foto_path, "observaciones": observaciones,
-                        })
-                        st.success(f"✅ {nombre} {apellido} agregado al plantel.")
-                        st.rerun()
+                        duplicado = buscar_jugador_por_dni(conn, dni)
+                        if duplicado is not None and duplicado["activo"] == 1:
+                            st.error(f"❌ Ya existe un jugador ACTIVO con ese DNI: {duplicado['apellido']}, {duplicado['nombre']}.")
+                        elif duplicado is not None and duplicado["activo"] == 0:
+                            st.warning(
+                                f"⚠️ Ese DNI pertenece a **{duplicado['apellido']}, {duplicado['nombre']}**, "
+                                "que está dado de baja (por eso no aparece en el plantel). El DNI es único, "
+                                "así que no se puede crear una ficha nueva con el mismo. Si es la misma persona, "
+                                "andá a la pestaña **✏️ Editar / Baja**, buscalo (ahí también se listan los dados de baja) "
+                                "y usá el botón **🔄 Reactivar jugador**."
+                            )
+                        else:
+                            foto_path = guardar_foto_jugador(foto, dni)
+                            insertar_jugador(conn, {
+                                "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
+                                "fecha_nacimiento": str(fecha_nac), "numero_camiseta": numero_camiseta,
+                                "posicion": posicion, "pie_habil": pie_habil, "grupo_sanguineo": grupo_sanguineo,
+                                "obra_social": obra_social, "telefono": telefono, "direccion": direccion,
+                                "contacto_emergencia_nombre": contacto_emerg_nombre,
+                                "contacto_emergencia_telefono": contacto_emerg_tel, "estado": estado,
+                                "foto_path": foto_path, "observaciones": observaciones,
+                            })
+                            st.success(f"✅ {nombre} {apellido} agregado al plantel.")
+                            st.rerun()
 
     # -----------------------------------------------------
     # TAB: EDITAR / BAJA (solo Administrador)
     # -----------------------------------------------------
     if puede_editar:
         with tabs[2]:
-            df_jug_edit = cargar_jugadores_df(conn)
+            # ⭐ solo_activos=False: acá tienen que aparecer TAMBIÉN los dados de baja,
+            # porque si no, un jugador inactivo queda invisible en toda la app y su DNI
+            # (que es único) se queda "trabado" sin forma de liberarlo ni reactivarlo.
+            df_jug_edit = cargar_jugadores_df(conn, solo_activos=False)
             if df_jug_edit is None:
                 st.info("No hay jugadores para editar.")
             else:
                 opciones = {
-                    f"#{int(r['numero_camiseta']) if pd.notna(r['numero_camiseta']) else '-'} - {r['apellido']}, {r['nombre']} (DNI {r['dni']})": r["id"]
+                    f"{'⚫ [BAJA] ' if r['activo'] == 0 else ''}#{int(r['numero_camiseta']) if pd.notna(r['numero_camiseta']) else '-'} - {r['apellido']}, {r['nombre']} (DNI {r['dni']})": r["id"]
                     for _, r in df_jug_edit.iterrows()
                 }
                 
@@ -1947,6 +2026,14 @@ def render_jugadores(conn, rol_actual):
                 seleccion = st.selectbox("Seleccioná un jugador", list(opciones.keys()), key="jug_edit_selector_unico")
                 jugador_id = opciones[seleccion]
                 jug = df_jug_edit[df_jug_edit["id"] == jugador_id].iloc[0]
+
+                if jug["activo"] == 0:
+                    st.warning("⚫ Este jugador está **dado de baja** (por eso no aparece en el plantel ni en Rendimiento Individual). Podés reactivarlo con el botón de abajo, o editar sus datos igual si hace falta.")
+                    if st.button("🔄 Reactivar jugador", type="primary", key=f"reactivar_{jugador_id}"):
+                        reactivar_jugador(conn, jugador_id)
+                        st.success(f"✅ {jug['apellido']}, {jug['nombre']} fue reactivado y vuelve a aparecer en el plantel.")
+                        st.rerun()
+                    st.divider()
 
                 with st.form(f"form_editar_jugador_{jugador_id}"):
                     c1, c2, c3 = st.columns(3)
@@ -1985,8 +2072,10 @@ def render_jugadores(conn, rol_actual):
                         dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True)
 
                     if actualizar:
-                        if dni_ya_existe(conn, dni, excluir_id=jugador_id):
-                            st.error("❌ Ese DNI ya pertenece a otro jugador.")
+                        duplicado_edit = buscar_jugador_por_dni(conn, dni, excluir_id=jugador_id)
+                        if duplicado_edit is not None:
+                            estado_dup = "activo" if duplicado_edit["activo"] == 1 else "dado de baja"
+                            st.error(f"❌ Ese DNI ya pertenece a otro jugador ({estado_dup}): {duplicado_edit['apellido']}, {duplicado_edit['nombre']}.")
                         else:
                             # Al subir la nueva foto, automáticamente aplicará el recorte cuadrado de 320x320 píxeles que definimos antes
                             foto_path = guardar_foto_jugador(nueva_foto, dni) if nueva_foto else None
@@ -2013,6 +2102,20 @@ def render_jugadores(conn, rol_actual):
 # =========================================================
 # FUNCIÓN PRINCIPAL (MAIN con Gestión de Sesión)
 # =========================================================
+def renderizar_banner_topo():
+    """Franja decorativa angosta con una foto de cancha, puramente visual (no reemplaza
+    ni modifica el header ni el título; si falta el archivo simplemente no se dibuja)."""
+    banner_b64 = imagen_a_base64(BANNER_HEADER_PATH)
+    if banner_b64:
+        st.markdown(f"""
+        <div style="height:110px; border-radius:10px; overflow:hidden; margin-bottom:14px;
+                    background-image: linear-gradient(rgba(6,7,10,0.55), rgba(6,7,10,0.75)),
+                                       url('data:image/jpeg;base64,{banner_b64}');
+                    background-size:cover; background-position:center 30%;">
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def renderizar_header(titulo):
     """Muestra el logo (si está disponible) al lado del título de la página."""
     if LOGO_DISPONIBLE:
@@ -2036,23 +2139,26 @@ def renderizar_header(titulo):
 
 
 def renderizar_footer():
-    """Pie de página fijo al final de la app: datos de contacto/redes del desarrollador."""
-    icono_whatsapp = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#25D366">
-        <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.406-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.489 1.2.532 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.354.101.174.449.741.964 1.201.663.591 1.221.774 1.394.86s.274.072.376-.043c.101-.116.433-.506.549-.68.116-.173.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.043.072.043.419-.101.825z"/>
-        <path d="M12 0C5.373 0 0 5.373 0 12c0 2.096.542 4.14 1.572 5.947L0 24l6.213-1.549A11.95 11.95 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.938a9.9 9.9 0 01-5.043-1.378l-.362-.215-3.696.921.941-3.6-.236-.372A9.933 9.933 0 012.062 12C2.062 6.51 6.51 2.062 12 2.062S21.938 6.51 21.938 12 17.49 21.938 12 21.938z"/>
-    </svg>"""
+    """Pie de página fijo al final de la app: datos de contacto/redes del desarrollador y logo."""
+    icono_whatsapp = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#25D366"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.406-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.489 1.2.532 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.354.101.174.449.741.964 1.201.663.591 1.221.774 1.394.86s.274.072.376-.043c.101-.116.433-.506.549-.68.116-.173.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.043.072.043.419-.101.825z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.096.542 4.14 1.572 5.947L0 24l6.213-1.549A11.95 11.95 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.938a9.9 9.9 0 01-5.043-1.378l-.362-.215-3.696.921.941-3.6-.236-.372A9.933 9.933 0 012.062 12C2.062 6.51 6.51 2.062 12 2.062S21.938 6.51 21.938 12 17.49 21.938 12 21.938z"/></svg>'
 
-    icono_facebook = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#1877F2">
-        <path d="M22.675 0h-21.35c-.732 0-1.325.593-1.325 1.325v21.351c0 .731.593 1.324 1.325 1.324h11.495v-9.294h-3.128v-3.622h3.128v-2.671c0-3.1 1.893-4.788 4.659-4.788 1.325 0 2.463.099 2.795.143v3.24l-1.918.001c-1.504 0-1.795.715-1.795 1.763v2.313h3.587l-.467 3.622h-3.12v9.293h6.116c.73 0 1.323-.593 1.323-1.325v-21.35c0-.732-.593-1.325-1.325-1.325z"/>
-    </svg>"""
+    icono_facebook = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#1877F2"><path d="M22.675 0h-21.35c-.732 0-1.325.593-1.325 1.325v21.351c0 .731.593 1.324 1.325 1.324h11.495v-9.294h-3.128v-3.622h3.128v-2.671c0-3.1 1.893-4.788 4.659-4.788 1.325 0 2.463.099 2.795.143v3.24l-1.918.001c-1.504 0-1.795.715-1.795 1.763v2.313h3.587l-.467 3.622h-3.12v9.293h6.116c.73 0 1.323-.593 1.323-1.325v-21.35c0-.732-.593-1.325-1.325-1.325z"/></svg>'
 
-    icono_instagram = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#E1306C">
-        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
-    </svg>"""
+    icono_instagram = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#E1306C"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>'
+
+    LOGO_FOOTER_PATH = "imagenes/Logo_RGB_Fondo Transparente_FutsalIQ solo_Negro.png"
+    logo_footer_html = ""
+    if os.path.exists(LOGO_FOOTER_PATH):
+        with open(LOGO_FOOTER_PATH, "rb") as f:
+            encoded_footer_logo = base64.b64encode(f.read()).decode()
+        logo_footer_html = f'<div style="text-align:center; margin-bottom:12px;"><img src="data:image/png;base64,{encoded_footer_logo}" style="width:190px; object-fit:contain;"></div>'
 
     st.markdown("---")
-    st.markdown(f"""
-    <div style="text-align:center; padding:14px 0 6px 0; color:#6B7280; font-size:13px;">
+    
+    # Usamos st.markdown con unsafe_allow_html=True correctamente formateado en una sola línea de bloque HTML
+    footer_html = f"""
+    <div style="text-align:center; padding:10px 0 6px 0; color:#6B7280; font-size:13px;">
+        {logo_footer_html}
         <div style="display:flex; justify-content:center; gap:26px; margin-bottom:10px; flex-wrap:wrap;">
             <a href="https://wa.me/5492964509725" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
                 {icono_whatsapp} 2964 50-9725
@@ -2066,7 +2172,8 @@ def renderizar_footer():
         </div>
         <div>© 2026 Sublime Design — Todos los derechos reservados.</div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(footer_html, unsafe_allow_html=True)
 
 
 def main():
@@ -2087,7 +2194,16 @@ def main():
     # 2. Sidebar con información de sesión y botón de salir
     st.sidebar.markdown(f"### 👤 Usuario: **{st.session_state['usuario_logueado']}**")
     st.sidebar.markdown(f"🔑 Rol: `{st.session_state['rol_usuario']}`")
-    
+
+    # Watermark chico del isotipo, puramente decorativo
+    logo_sidebar_b64 = imagen_a_base64(LOGO_SIDEBAR_PATH)
+    if logo_sidebar_b64:
+        st.sidebar.markdown(f"""
+        <div style="text-align:center; opacity:0.35; margin:10px 0;">
+            <img src="data:image/png;base64,{logo_sidebar_b64}" style="width:60px;">
+        </div>
+        """, unsafe_allow_html=True)
+
     st.sidebar.divider()
     if st.sidebar.button("Cerrar Sesión", use_container_width=True):
         st.session_state["usuario_logueado"] = None
@@ -2099,6 +2215,7 @@ def main():
 
     if rol_actual == "Administrador":
         # Acceso total a todas las funciones
+        renderizar_banner_topo()
         renderizar_header("Futsal IQ Analyzer - Panel Admin")
         tab1, tab2, tab3, tab4 = st.tabs(["Carga de Datos", "Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
@@ -2113,6 +2230,7 @@ def main():
             
     elif rol_actual == "Lector":
         # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
+        renderizar_banner_topo()
         renderizar_header("Futsal IQ Analyzer - Panel Lector")
         tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
