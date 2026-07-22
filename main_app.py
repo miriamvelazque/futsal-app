@@ -79,6 +79,43 @@ st.markdown("""
 .stTabs [aria-selected="true"] p {
     color: #FFFFFF;
 }
+
+/* Estos 4 botones quedan siempre en rojo (acciones de guardado/borrado críticas),
+   sin importar qué primaryColor se configure en el tema (config.toml). */
+.st-key-btn_eliminar_bd button,
+.st-key-btn_guardar_finalizar_partido button,
+.st-key-btn_guardar_jugador_nuevo button,
+.st-key-btn_guardar_cambios_jugador button,
+.st-key-btn_registrar_abp button {
+    background-color: #FF4B4B !important;
+    border-color: #FF4B4B !important;
+    color: #FFFFFF !important;
+}
+.st-key-btn_eliminar_bd button:hover,
+.st-key-btn_guardar_finalizar_partido button:hover,
+.st-key-btn_guardar_jugador_nuevo button:hover,
+.st-key-btn_guardar_cambios_jugador button:hover,
+.st-key-btn_registrar_abp button:hover {
+    background-color: #E03131 !important;
+    border-color: #E03131 !important;
+    color: #FFFFFF !important;
+}
+
+/* Posesión Rival y Pausar Reloj: solo se fuerzan a rojo cuando están ACTIVOS
+   (Streamlit les pone kind="primary" en ese momento). Inactivos (kind="secondary")
+   no se tocan y mantienen el estilo gris/outline normal. */
+.st-key-btn_posesion_rival button[kind="primary"],
+.st-key-btn_pausar_reloj button[kind="primary"] {
+    background-color: #FF4B4B !important;
+    border-color: #FF4B4B !important;
+    color: #FFFFFF !important;
+}
+.st-key-btn_posesion_rival button[kind="primary"]:hover,
+.st-key-btn_pausar_reloj button[kind="primary"]:hover {
+    background-color: #E03131 !important;
+    border-color: #E03131 !important;
+    color: #FFFFFF !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -927,7 +964,7 @@ def render_carga_datos(conn):
 
     # 🚨 BOTÓN DE EMERGENCIA SEGURO PARA ELIMINAR BASE DE DATOS Y EMPEZAR DE CERO
     st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
-    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True):
+    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
         import os
         conn.close()
         if os.path.exists("futsal.db"):
@@ -1129,14 +1166,14 @@ def render_carga_datos(conn):
 
         with c_pos2:
             tipo_boton_rival = "primary" if st.session_state.pos_estado_actual == "Rival" else "secondary"
-            if st.button("🔴 POSESIÓN RIVAL", use_container_width=True, type=tipo_boton_rival):
+            if st.button("🔴 POSESIÓN RIVAL", use_container_width=True, type=tipo_boton_rival, key="btn_posesion_rival"):
                 st.session_state.pos_estado_actual = "Rival"
                 st.session_state.pos_ultimo_click = time.time()
                 st.rerun()
 
         with c_pos3:
             tipo_boton_pausa = "primary" if st.session_state.pos_estado_actual == "Pausa" else "secondary"
-            if st.button("⏸️ PAUSAR RELOJ", use_container_width=True, type=tipo_boton_pausa):
+            if st.button("⏸️ PAUSAR RELOJ", use_container_width=True, type=tipo_boton_pausa, key="btn_pausar_reloj"):
                 st.session_state.pos_estado_actual = "Pausa"
                 st.session_state.pos_ultimo_click = None
                 st.rerun()
@@ -1163,7 +1200,7 @@ def render_carga_datos(conn):
             st.metric(f"⏱️ Posesión Rival ({st.session_state.pos_tiempo_actual})", formatear_tiempo(st.session_state[clave_rival]), f"{pct_rival:.1f}%", delta_color="inverse")
 
     # El botón de guardado queda fuera del if/else para funcionar tanto en modo manual como en modo reloj.
-    if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True):
+    if st.button("💾 GUARDAR / FINALIZAR PARTIDO", type="primary", use_container_width=True, key="btn_guardar_finalizar_partido"):
         if not rival:
             st.warning("⚠️ Ingresá el nombre del equipo rival antes de guardar el partido.")
         else:
@@ -1239,7 +1276,7 @@ def render_carga_datos(conn):
     # -----------------------------------------------------
     if tipo_evento == "ABP":
         st.info("🚩 Los ABP se registran directo con el botón — no hace falta clic en la cancha ni número de jugador.")
-        if st.button("➕ Registrar ABP", type="primary", use_container_width=True):
+        if st.button("➕ Registrar ABP", type="primary", use_container_width=True, key="btn_registrar_abp"):
             insertar_evento_individual(
                 conn, fecha, rival, "ABP", tiempo, equipo,
                 jugador="", zona=lado_abp_sel, resultado=resultado_abp_sel,
@@ -1432,6 +1469,38 @@ def render_dashboard_general(conn):
     render_kpi_card(col3, "Pelotas Perdidas", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]), color_acento=COLORES_TIPO_EVENTO["Perdidas"])
     render_kpi_card(col4, "Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]), color_acento=COLORES_TIPO_EVENTO["Recuperos"])
     render_kpi_card(col5, "ABP Ejecutados", len(df_filtrado[df_filtrado["tipo_evento"] == "ABP"]), color_acento=COLORES_TIPO_EVENTO["ABP"])
+
+    # --- MAPA DE CALOR TÁCTICO (equipo/filtros globales) ---
+    st.divider()
+    st.markdown("### 📍 Mapa de Calor Táctico")
+    if df_filtrado.empty:
+        st.info("No hay eventos para los filtros seleccionados.")
+    else:
+        col_heatmap, col_barras_tipo = st.columns([1.3, 1])
+
+        with col_heatmap:
+            fig_heatmap_general = generar_heatmap_analisis(df_filtrado, titulo_mapa="Densidad de Acciones - Equipo")
+            st.plotly_chart(fig_heatmap_general, use_container_width=False, key="heatmap_dashboard_general_chart")
+
+        with col_barras_tipo:
+            st.markdown("#### 📊 Distribución de Volumen Táctico")
+            conteo_tipo = df_filtrado["tipo_evento"].value_counts().reset_index()
+            conteo_tipo.columns = ["Tipo de Evento", "Cantidad"]
+            conteo_tipo = conteo_tipo.sort_values("Cantidad")
+            # Mismo criterio de color que los puntos del heatmap (color_por_tipo_evento),
+            # así un tipo de evento se ve siempre igual en ambos gráficos.
+            mapa_colores_tipo = {tipo: color_por_tipo_evento(tipo) for tipo in conteo_tipo["Tipo de Evento"]}
+            fig_barras_tipo = px.bar(
+                conteo_tipo, x="Cantidad", y="Tipo de Evento", orientation="h",
+                color="Tipo de Evento", color_discrete_map=mapa_colores_tipo,
+                text="Cantidad"
+            )
+            fig_barras_tipo.update_traces(textposition="outside")
+            fig_barras_tipo.update_layout(
+                height=400, margin=dict(t=20, b=20, l=10, r=30),
+                showlegend=False, xaxis_title=None, yaxis_title=None,
+            )
+            st.plotly_chart(fig_barras_tipo, use_container_width=True, key="barras_volumen_tactico_chart")
 
     # --- TENENCIA DE LA PELOTA ---
     st.divider()
@@ -1974,7 +2043,7 @@ def render_jugadores(conn, rol_actual):
                 observaciones = st.text_area("Observaciones (alergias, lesiones previas, etc.)")
                 foto = st.file_uploader("Foto del jugador", type=["jpg", "jpeg", "png"])
 
-                enviado = st.form_submit_button("💾 Guardar jugador", type="primary", use_container_width=True)
+                enviado = st.form_submit_button("💾 Guardar jugador", type="primary", use_container_width=True, key="btn_guardar_jugador_nuevo")
 
                 if enviado:
                     if not nombre or not apellido or not dni:
@@ -2066,7 +2135,7 @@ def render_jugadores(conn, rol_actual):
 
                     col_upd, col_baja = st.columns(2)
                     with col_upd:
-                        actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True)
+                        actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True, key="btn_guardar_cambios_jugador")
                     with col_baja:
                         confirmar_baja = st.checkbox("Confirmo la baja de este jugador", key=f"edit_baja_chk_{jugador_id}")
                         dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True)
