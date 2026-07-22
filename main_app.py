@@ -24,7 +24,7 @@ DURACION_TOTAL_SEGUNDOS = 1200
 
 # Logo del club/desarrollador (favicon + header). Si el archivo no existe (ej. todavía
 # no lo subiste al repo), se usa el emoji como respaldo automático sin romper nada.
-LOGO_PATH = "assets/logo.png"
+LOGO_PATH = "imagenes/logo.png"
 LOGO_DISPONIBLE = os.path.exists(LOGO_PATH)
 
 
@@ -80,13 +80,19 @@ def verificar_usuario(conn, usuario, clave):
 
 
 def mostrar_login(conn):
-    """Muestra un formulario estético de Login en el centro de la pantalla."""
-    st.markdown("<h2 style='text-align: center;'>🔐 Acceso Futsal IQ Analyzer</h2>", unsafe_allow_html=True)
+    """Muestra un formulario estético de Login con el logo de Futsal IQ centrado."""
     
-    col1, col2, col3 = st.columns([1, 1.3, 1])
+    # Contenedor central para alinear mejor los elementos
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    
     with col2:
+        # Mostramos tu logo apuntando a la nueva carpeta 'imagenes'
+        # (Asegurate de que el archivo se llame exactamente igual o reemplazá el nombre)
+        st.image("imagenes/Logo_RGB_Fondo Negro_FutsalIQ.jpg", use_container_width=True)
+        
+        st.markdown("<h3 style='text-align: center; color: #FFFFFF;'>Acceso al Sistema</h3>", unsafe_allow_html=True)
+        
         with st.form("formulario_login"):
-            st.markdown("### Iniciar Sesión")
             usuario = st.text_input("Usuario")
             clave = st.text_input("Contraseña", type="password")
             boton_ingresar = st.form_submit_button("Ingresar", use_container_width=True)
@@ -1391,17 +1397,28 @@ def render_dashboard_general(conn):
                 "Segundos": [segundos_propio, segundos_rival],
             })
             df_tenencia["Porcentaje"] = (df_tenencia["Segundos"] / total_segundos * 100).round(1)
+            
             fig_tenencia = px.bar(
                 df_tenencia, x="Segundos", y="Equipo", orientation="h",
                 color="Equipo", color_discrete_map={"Propio": "#2ecc71", "Rival": "#e74c3c"},
                 text=df_tenencia["Porcentaje"].astype(str) + "%"
             )
-            fig_tenencia.update_traces(textposition="outside")
-            fig_tenencia.update_layout(
-                height=280, margin=dict(t=30, b=10, l=10, r=30),
-                showlegend=False, xaxis_title=None, yaxis_title=None,
-                title=dict(text="Total del partido", font=dict(size=13, color="white"), x=0.5)
+            
+            # --- TEXTO ADENTRO DE LA BARRA ---
+            fig_tenencia.update_traces(
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(size=14, color="#2b2b2b", weight="bold")
             )
+            
+            fig_tenencia.update_layout(
+                height=280, 
+                margin=dict(t=35, b=10, l=10, r=10),
+                showlegend=False, xaxis_title=None, yaxis_title=None,
+                # --- TÍTULO PERFECTAMENTE CENTRADO ---
+                title=dict(text="Total del partido", font=dict(size=18, color="white"), x=0.5, xanchor='center')
+            )
+            
             st.plotly_chart(fig_tenencia, use_container_width=True, key="tenencia_pelota_chart")
 
         with col_pos_1t:
@@ -1414,7 +1431,7 @@ def render_dashboard_general(conn):
                 )
                 fig_1t.update_layout(
                     height=280, margin=dict(t=30, b=10, l=10, r=10), showlegend=False,
-                    title=dict(text="1er Tiempo", font=dict(size=13, color="white"), x=0.5)
+                    title=dict(text="1er Tiempo", font=dict(size=18, color="white"), x=0.5, xanchor='center')
                 )
                 st.plotly_chart(fig_1t, use_container_width=True, key="tenencia_1t_chart")
             else:
@@ -1430,7 +1447,7 @@ def render_dashboard_general(conn):
                 )
                 fig_2t.update_layout(
                     height=280, margin=dict(t=30, b=10, l=10, r=10), showlegend=False,
-                    title=dict(text="2do Tiempo", font=dict(size=13, color="white"), x=0.5)
+                    title=dict(text="2do Tiempo", font=dict(size=18, color="white"), x=0.5, xanchor='center')
                 )
                 st.plotly_chart(fig_2t, use_container_width=True, key="tenencia_2t_chart")
             else:
@@ -1996,16 +2013,26 @@ def render_jugadores(conn, rol_actual):
 # =========================================================
 # FUNCIÓN PRINCIPAL (MAIN con Gestión de Sesión)
 # =========================================================
-def renderizar_header(texto_titulo):
+def renderizar_header(titulo):
     """Muestra el logo (si está disponible) al lado del título de la página."""
     if LOGO_DISPONIBLE:
-        col_logo, col_titulo = st.columns([1, 10])
-        with col_logo:
-            st.image(LOGO_PATH, width=60)
-        with col_titulo:
-            st.markdown(f"<h1 style='margin-top:8px;'>{texto_titulo}</h1>", unsafe_allow_html=True)
+        with open(LOGO_PATH, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        
+        # Acá ajustás el tamaño del logo (ej: 65px o 75px)
+        logo_size = 65 
+        
+        st.markdown(
+            f"""
+            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+                <img src="data:image/png;base64,{encoded_string}" style="width: {logo_size}px; height: {logo_size}px; object-fit: contain;">
+                <h1 style="margin: 0; padding: 0; font-size: 2.2rem; line-height: 1.2;">{titulo}</h1>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
     else:
-        st.title(f"📊 {texto_titulo}")
+        st.title(titulo)
 
 
 def renderizar_footer():
@@ -2030,7 +2057,7 @@ def renderizar_footer():
             <a href="https://wa.me/5492964509725" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
                 {icono_whatsapp} 2964 50-9725
             </a>
-            <a href="https://facebook.com/sublime.design" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+            <a href="https://facebook.com/sublimedesign" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
                 {icono_facebook} Sublime Design
             </a>
             <a href="https://instagram.com/sublime.tdf" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">

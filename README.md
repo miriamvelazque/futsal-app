@@ -20,7 +20,7 @@ Aplicación de análisis táctico y gestión de partidos de futsal desarrollada 
   - `pandas`
   - `numpy`
   - `plotly`
-  - `openpyxl` (opcional para archivos `.xlsx`)
+  - `openpyxl` (para archivos `.xlsx`)
 
 ## Instalación
 
