@@ -32,7 +32,7 @@ LOGO_DISPONIBLE = os.path.exists(LOGO_PATH)
 FONDO_LOGIN_PATH = "imagenes/Copia de Fondo-01.png"
 BANNER_HEADER_PATH = "imagenes/Copia de Fondo-02.jpg"
 LOGO_SIDEBAR_PATH = "imagenes/Logo_RGB_Fondo Transparente_FutsalIQ solo_Negro.png"
-LOGO_LOGIN_PATH = "imagenes/Logo_RGB_Fondo Negro_FutsalIQ.jpg"
+LOGO_LOGIN_PATH = "imagenes/Logo_RGB_Fondo Transparente_FutsalIQ_Negro.png"
 
 
 def imagen_a_base64(path):
@@ -2208,12 +2208,14 @@ def renderizar_header(titulo):
 
 
 def renderizar_footer():
-    """Pie de página fijo al final de la app: datos de contacto/redes del desarrollador y logo."""
+    """Pie de página fijo al final de la app: datos de FutsaliQ y firma de desarrollo MAVA."""
     icono_whatsapp = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#25D366"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.406-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.489 1.2.532 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.354.101.174.449.741.964 1.201.663.591 1.221.774 1.394.86s.274.072.376-.043c.101-.116.433-.506.549-.68.116-.173.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.043.072.043.419-.101.825z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.096.542 4.14 1.572 5.947L0 24l6.213-1.549A11.95 11.95 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.938a9.9 9.9 0 01-5.043-1.378l-.362-.215-3.696.921.941-3.6-.236-.372A9.933 9.933 0 012.062 12C2.062 6.51 6.51 2.062 12 2.062S21.938 6.51 21.938 12 17.49 21.938 12 21.938z"/></svg>'
 
-    icono_facebook = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#1877F2"><path d="M22.675 0h-21.35c-.732 0-1.325.593-1.325 1.325v21.351c0 .731.593 1.324 1.325 1.324h11.495v-9.294h-3.128v-3.622h3.128v-2.671c0-3.1 1.893-4.788 4.659-4.788 1.325 0 2.463.099 2.795.143v3.24l-1.918.001c-1.504 0-1.795.715-1.795 1.763v2.313h3.587l-.467 3.622h-3.12v9.293h6.116c.73 0 1.323-.593 1.323-1.325v-21.35c0-.732-.593-1.325-1.325-1.325z"/></svg>'
-
     icono_instagram = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#E1306C"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>'
+
+    icono_email = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#9CA3AF"><path d="M0 3v18h24v-18h-24zm6.623 7.929l-4.623 5.712v-9.458l4.611 3.746zm6.377 1.76l4.646-3.791 4.632 3.771-4.642 3.753-4.636-3.733zm-.001-1.929l-4.631-3.76-4.631 3.76 4.631 3.76 4.631-3.76zm-6.398-3.79l4.644 3.77-4.644 3.769v-7.539z"/></svg>'
+
+    icono_linkedin = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#0A66C2"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>'
 
     LOGO_FOOTER_PATH = "imagenes/Logo_RGB_Fondo Transparente_FutsalIQ solo_Negro.png"
     logo_footer_html = ""
@@ -2224,22 +2226,31 @@ def renderizar_footer():
 
     st.markdown("---")
     
-    # Usamos st.markdown con unsafe_allow_html=True correctamente formateado en una sola línea de bloque HTML
     footer_html = f"""
     <div style="text-align:center; padding:10px 0 6px 0; color:#6B7280; font-size:13px;">
         {logo_footer_html}
-        <div style="display:flex; justify-content:center; gap:26px; margin-bottom:10px; flex-wrap:wrap;">
-            <a href="https://wa.me/5492964509725" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
-                {icono_whatsapp} 2964 50-9725
+        <div style="display:flex; justify-content:center; gap:26px; margin-bottom:14px; flex-wrap:wrap;">
+            <a href="https://wa.me/5492964538214" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_whatsapp} 2964 53-8214
             </a>
-            <a href="https://facebook.com/sublimedesign" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
-                {icono_facebook} Sublime Design
+            <a href="https://instagram.com/futsaliq" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_instagram} futsaliq
             </a>
-            <a href="https://instagram.com/sublime.tdf" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
-                {icono_instagram} sublime.tdf
+            <a href="mailto:futsaliq@gmail.com" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_email} futsaliq@gmail.com
             </a>
         </div>
-        <div>© 2026 Sublime Design — Todos los derechos reservados.</div>
+        <div style="border-top: 1px solid #1F2937; margin: 10px auto; width: 60%;"></div>
+        <div style="display:flex; justify-content:center; align-items:center; gap:16px; flex-wrap:wrap; font-size:12px;">
+            <span>© 2026 FutsaliQ — Todos los derechos reservados.</span>
+            <span style="color:#4B5563;">|</span>
+            <span style="display:inline-flex; align-items:center; gap:4px;">
+                Diseñado y desarrollado por MAVA 
+                <a href="https://www.linkedin.com/in/miriam-alicia-velazque/" target="_blank" style="display:inline-flex; align-items:center; margin-left:4px; text-decoration:none;">
+                    {icono_linkedin}
+                </a>
+            </span>
+        </div>
     </div>
     """
     st.markdown(footer_html, unsafe_allow_html=True)
