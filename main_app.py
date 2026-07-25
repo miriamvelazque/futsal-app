@@ -351,6 +351,22 @@ def insertar_eventos_bulk(conn, df_upload):
     """Inserta eventos provenientes de un archivo CSV/Excel en la tabla eventos."""
     c = conn.cursor()
     count = 0
+
+    # --- LIMPIEZA DE JUGADOR ---
+    if "jugador" in df_upload.columns:
+        # Reemplazamos espacios en blanco o nulos por NaN de forma limpia
+        df_upload["jugador"] = df_upload["jugador"].replace(r'^\s*$', float('nan'), regex=True)
+        
+        # Convertimos a numérico de forma segura (los vacíos quedan como NaN)
+        df_upload["jugador"] = pd.to_numeric(df_upload["jugador"], errors='coerce')
+        
+        # Rellenamos los NaN con un valor centinela (-999) para identificarlos
+        df_upload["jugador"] = df_upload["jugador"].fillna(-999)
+        
+        # Pasamos a entero y luego a texto, convirtiendo nuestro centinela en string vacío
+        df_upload["jugador"] = df_upload["jugador"].astype(int).astype(str)
+        df_upload["jugador"] = df_upload["jugador"].replace("-999", "")
+    # ----------------------------------------------------------------
     for _, row in df_upload.iterrows():
         fecha = str(row.get("fecha", "")) if not pd.isna(row.get("fecha", "")) else ""
         rival = str(row.get("rival", "")) if not pd.isna(row.get("rival", "")) else ""
@@ -1648,43 +1664,92 @@ def render_dashboard_general(conn):
         df_abp = df_filtrado[df_filtrado["tipo_evento"] == "ABP"]
         if not df_abp.empty:
             st.divider()
-            st.markdown("### 🚩 Análisis de ABP (Corners / Tiros Libres / Laterales / 10mts. / Penales)")
+            st.markdown("### 🚩 Análisis de ABP (Corners / Lateral zona alta)")
 
             # Compatibilidad con datos viejos: si tipo_abp está vacío, se usaba antes el campo 'resultado'
-            # para guardar el subtipo de ABP.
             tipo_abp_series = df_abp["tipo_abp"].replace("", pd.NA) if "tipo_abp" in df_abp.columns else pd.Series(dtype=object)
             if "resultado" in df_abp.columns:
                 tipo_abp_series = tipo_abp_series.fillna(df_abp["resultado"])
 
-            col_tipo_abp, col_lado_abp, col_goles_abp = st.columns(3)
-            with col_tipo_abp:
-                st.markdown("#### 📋 Por Tipo de ABP")
+            # Estructura de 3 columnas coherente con el resto del dashboard
+            col_tabla_abp, col_grafico_abp, col_lado_abp = st.columns([1.1, 1.0, 1.1])
+
+            with col_tabla_abp:
+                st.markdown("#### 📋 Desglose por Tipo de ABP")
                 tipo_abp_counts = tipo_abp_series.fillna("Sin especificar").value_counts().reset_index()
                 tipo_abp_counts.columns = ["Tipo de ABP", "Cantidad"]
+                total_abp = tipo_abp_counts["Cantidad"].sum()
+                tipo_abp_counts["Porcentaje"] = ((tipo_abp_counts["Cantidad"] / total_abp) * 100).round(1).astype(str) + "%"
+                st.dataframe(tipo_abp_counts, use_container_width=True, hide_index=True)
+
+            with col_grafico_abp:
+                st.markdown("#### 📊 Gráfico por Tipo")
                 fig_abp_tipo = px.bar(
                     tipo_abp_counts, x="Tipo de ABP", y="Cantidad", color="Tipo de ABP",
                     color_discrete_sequence=px.colors.qualitative.Pastel2
                 )
-                fig_abp_tipo.update_layout(height=280, margin=dict(t=20, b=20), showlegend=False)
+                fig_abp_tipo.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
                 st.plotly_chart(fig_abp_tipo, use_container_width=True, key="abp_por_tipo")
+
             with col_lado_abp:
-                st.markdown("#### 📋 Por Lado")
+                st.markdown("#### 📋 Por Lado / Zona")
                 lado_abp_counts = df_abp["zona"].fillna("Sin especificar").value_counts().reset_index()
                 lado_abp_counts.columns = ["Lado", "Cantidad"]
                 fig_abp_lado = px.pie(
                     lado_abp_counts, values="Cantidad", names="Lado", hole=0.4,
                     color="Lado", color_discrete_map=COLORES_LADO_ABP
                 )
-                fig_abp_lado.update_layout(height=280, margin=dict(t=10, b=10, l=10, r=10))
+                fig_abp_lado.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10))
                 st.plotly_chart(fig_abp_lado, use_container_width=True, key="abp_por_lado")
-            with col_goles_abp:
-                st.markdown("#### ⚽ Goles de ABP")
-                goles_abp = int((df_abp["resultado"] == "Gol").sum())
-                st.metric("Goles convertidos desde ABP", goles_abp)
-                if goles_abp > 0:
-                    goles_abp_tipo = tipo_abp_series[df_abp["resultado"] == "Gol"].fillna("Sin especificar").value_counts().reset_index()
-                    goles_abp_tipo.columns = ["Tipo de ABP", "Goles"]
-                    st.dataframe(goles_abp_tipo, use_container_width=True, hide_index=True)
+
+    # --- ANÁLISIS DE FALTAS ---
+    if not df_filtrado.empty:
+        df_faltas = df_filtrado[df_filtrado["tipo_evento"] == "Faltas"]
+        if not df_faltas.empty:
+            st.divider()
+            st.markdown("### 🟨 Análisis de Faltas")
+
+            col_tabla_f, col_grafico_f, col_top3_f = st.columns([1.1, 1.0, 1.1])
+
+            with col_tabla_f:
+                st.markdown("#### 📋 Desglose por Zona")
+                zona_faltas_counts = df_faltas["zona"].fillna("Sin especificar").value_counts().reset_index()
+                zona_faltas_counts.columns = ["Zona", "Cantidad"]
+                total_zona_f = zona_faltas_counts["Cantidad"].sum()
+                zona_faltas_counts["Porcentaje"] = ((zona_faltas_counts["Cantidad"] / total_zona_f) * 100).round(1).astype(str) + "%"
+                st.dataframe(zona_faltas_counts, use_container_width=True, hide_index=True)
+
+            with col_grafico_f:
+                st.markdown("#### 📊 Distribución por Zona")
+                fig_torta_faltas = px.pie(
+                    zona_faltas_counts, values="Cantidad", names="Zona",
+                    color="Zona", color_discrete_sequence=px.colors.qualitative.Pastel1, hole=0.4
+                )
+                fig_torta_faltas.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                st.plotly_chart(fig_torta_faltas, use_container_width=True, key="torta_zona_faltas")
+
+            with col_top3_f:
+                st.markdown("#### 🏆 Top 3 Jugadores - Faltas")
+                top_jugadores_f = df_faltas["jugador"].replace("", pd.NA).dropna().value_counts().reset_index().head(3)
+                top_jugadores_f.columns = ["Jugador", "Cantidad"]
+                
+                if not top_jugadores_f.empty:
+                    top_jugadores_f_sorted = top_jugadores_f.sort_values("Cantidad", ascending=True)
+                    fig_top3_f = px.bar(
+                        top_jugadores_f_sorted, x="Cantidad", y="Jugador",
+                        orientation="h", text="Cantidad",
+                        color_discrete_sequence=["#F6E05E"]  # Un tono ambar/amarillo acorde a las faltas
+                    )
+                    fig_top3_f.update_layout(
+                        height=240, 
+                        margin=dict(t=10, b=10, l=10, r=10), 
+                        showlegend=False,
+                        yaxis=dict(type="category")
+                    )
+                    fig_top3_f.update_traces(textposition="outside")
+                    st.plotly_chart(fig_top3_f, use_container_width=True, key="top3_jugadores_faltas")
+                else:
+                    st.info("Sin datos suficientes.")            
 
     # --- ANÁLISIS DE PÉRDIDAS Y RECUPEROS POR ZONA + TOP 3 ---
     if not df_filtrado.empty:
@@ -1719,15 +1784,26 @@ def render_dashboard_general(conn):
 
             with col_top3:
                 st.markdown(f"#### 🏆 Top 3 Jugadores - {tipo_evento_analisis}")
-                top_jugadores = df_tipo["jugador"].value_counts().reset_index().head(3)
+                # Agrupamos, filtramos valores vacíos y ordenamos de mayor a menor
+                top_jugadores = df_tipo["jugador"].replace("", pd.NA).dropna().value_counts().reset_index().head(3)
                 top_jugadores.columns = ["Jugador", "Cantidad"]
+                
                 if not top_jugadores.empty:
+                    # Ordenamos ascendente para que la barra más grande quede arriba en el gráfico horizontal
+                    top_jugadores_sorted = top_jugadores.sort_values("Cantidad", ascending=True)
+                    
                     fig_top3 = px.bar(
-                        top_jugadores.sort_values("Cantidad"), x="Cantidad", y="Jugador",
+                        top_jugadores_sorted, x="Cantidad", y="Jugador",
                         orientation="h", text="Cantidad",
                         color_discrete_sequence=[color_seq[0]]
                     )
-                    fig_top3.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                    # Forzamos a que el eje Y mantenga el orden estricto de las categorías sin espacios muertos
+                    fig_top3.update_layout(
+                        height=240, 
+                        margin=dict(t=10, b=10, l=10, r=10), 
+                        showlegend=False,
+                        yaxis=dict(type="category")
+                    )
                     fig_top3.update_traces(textposition="outside")
                     st.plotly_chart(fig_top3, use_container_width=True, key=f"top3_{tipo_evento_analisis}")
                 else:
@@ -1758,7 +1834,6 @@ def render_rendimiento_individual(conn):
     df_base_equipo = df_eventos[df_eventos["equipo"] == equipo_sel]
     
     with col_f2:
-       # Intentamos ordenar numéricamente si es posible, o por texto de forma ascendente (menor a mayor)
         try:
             jugadores_disponibles = sorted(df_base_equipo["jugador"].dropna().unique(), key=lambda x: (int(x) if str(x).isdigit() else 0, str(x)))
         except:
@@ -1769,8 +1844,8 @@ def render_rendimiento_individual(conn):
     df_base_jugador = df_base_equipo[df_base_equipo["jugador"] == jugador_sel]
 
     with col_f3:
-       partidos_disponibles = ["Todos"] + sorted(list(df_base_jugador["partido"].dropna().unique()), reverse=True)
-       partido_sel = st.selectbox("Filtrar por Partido / Rival", partidos_disponibles, key="rend_rival_sel")
+        partidos_disponibles = ["Todos"] + sorted(list(df_base_jugador["partido"].dropna().unique()), reverse=True)
+        partido_sel = st.selectbox("Filtrar por Partido / Rival", partidos_disponibles, key="rend_rival_sel")
 
     with col_f4:
         tiempos_disponibles = ["Todos"] + list(df_base_jugador["tiempo"].dropna().unique())
@@ -1827,7 +1902,6 @@ def render_rendimiento_individual(conn):
     total_acciones = len(df_jugador_filtrado)
     render_kpi_card(m1, "Total Acciones", total_acciones, color_acento="#4158f6")
 
-    # ⭐ Consideramos Tiros al Arco los anotados como "Gol" y "Atajado"
     goles_tiros = len(df_jugador_filtrado[(df_jugador_filtrado["tipo_evento"] == "Finalizaciones") & (df_jugador_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
     render_kpi_card(m2, "Cantidad de Finalizaciones", goles_tiros, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
 
@@ -1857,13 +1931,12 @@ def render_rendimiento_individual(conn):
         else:
             st.info("Sin registros para los filtros seleccionados.")
 
-    # --- NUEVA SECCIÓN: DESGLOSE DE FINALIZACIONES DEL JUGADOR (Fila Inferior) ---
+    # --- SECCIÓN: DESGLOSE DE FINALIZACIONES ---
     if not df_jugador_filtrado.empty:
         df_fin_jugador = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Finalizaciones"]
-        
         if not df_fin_jugador.empty:
             st.divider()
-            st.markdown(f"### 🎯 Efectividad de Remates - Jugador {jugador_sel} ({equipo_sel})")
+            st.markdown(f"### 🎯 Efectividad de Remates - Jugador {jugador_sel}")
             col_t_ind, col_g_ind = st.columns([1, 1.2])
             
             with col_t_ind:
@@ -1872,22 +1945,89 @@ def render_rendimiento_individual(conn):
                 res_counts_j.columns = ["Resultado", "Cantidad"]
                 total_fin_j = res_counts_j["Cantidad"].sum()
                 res_counts_j["Porcentaje"] = ((res_counts_j["Cantidad"] / total_fin_j) * 100).round(1).astype(str) + "%"
-                
                 st.dataframe(res_counts_j, use_container_width=True, hide_index=True)
                 
             with col_g_ind:
                 fig_torta_j = px.pie(
                     res_counts_j, values="Cantidad", names="Resultado",
-                    color="Resultado",
-                    color_discrete_map=COLORES_RESULTADO_FINALIZACION,
-                    hole=0.4
+                    color="Resultado", color_discrete_map=COLORES_RESULTADO_FINALIZACION, hole=0.4
                 )
                 fig_torta_j.update_layout(
-                    height=300, 
-                    margin=dict(t=10, b=70, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
+                    height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False
                 )
                 st.plotly_chart(fig_torta_j, use_container_width=True, key="torta_individual_finalizaciones")
+
+        # --- SECCIÓN: DESGLOSE DE PÉRDIDAS POR ZONA (Jugador) ---
+        df_perd_jugador = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Perdidas"]
+        if not df_perd_jugador.empty:
+            st.divider()
+            st.markdown(f"### 🔴 Análisis de Pérdidas - Jugador {jugador_sel}")
+            col_tp_ind, col_gp_ind = st.columns([1.1, 1.0])
+            
+            with col_tp_ind:
+                st.markdown("#### 📋 Desglose por Zona")
+                zona_p_counts = df_perd_jugador["zona"].fillna("Sin especificar").value_counts().reset_index()
+                zona_p_counts.columns = ["Zona", "Cantidad"]
+                total_zp = zona_p_counts["Cantidad"].sum()
+                zona_p_counts["Porcentaje"] = ((zona_p_counts["Cantidad"] / total_zp) * 100).round(1).astype(str) + "%"
+                st.dataframe(zona_p_counts, use_container_width=True, hide_index=True)
+                
+            with col_gp_ind:
+                st.markdown("#### 📊 Distribución por Zona")
+                fig_torta_p_j = px.pie(
+                    zona_p_counts, values="Cantidad", names="Zona",
+                    color="Zona", color_discrete_sequence=px.colors.qualitative.Set2, hole=0.4
+                )
+                fig_torta_p_j.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                st.plotly_chart(fig_torta_p_j, use_container_width=True, key="torta_zona_perdidas_ind")
+
+        # --- SECCIÓN: DESGLOSE DE RECUPEROS POR ZONA (Jugador) ---
+        df_rec_jugador = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Recuperos"]
+        if not df_rec_jugador.empty:
+            st.divider()
+            st.markdown(f"### 🟢 Análisis de Recuperos - Jugador {jugador_sel}")
+            col_tr_ind, col_gr_ind = st.columns([1.1, 1.0])
+            
+            with col_tr_ind:
+                st.markdown("#### 📋 Desglose por Zona")
+                zona_r_counts = df_rec_jugador["zona"].fillna("Sin especificar").value_counts().reset_index()
+                zona_r_counts.columns = ["Zona", "Cantidad"]
+                total_zr = zona_r_counts["Cantidad"].sum()
+                zona_r_counts["Porcentaje"] = ((zona_r_counts["Cantidad"] / total_zr) * 100).round(1).astype(str) + "%"
+                st.dataframe(zona_r_counts, use_container_width=True, hide_index=True)
+                
+            with col_gr_ind:
+                st.markdown("#### 📊 Distribución por Zona")
+                fig_torta_r_j = px.pie(
+                    zona_r_counts, values="Cantidad", names="Zona",
+                    color="Zona", color_discrete_sequence=px.colors.qualitative.Set3, hole=0.4
+                )
+                fig_torta_r_j.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                st.plotly_chart(fig_torta_r_j, use_container_width=True, key="torta_zona_recuperos_ind")
+
+        # --- SECCIÓN: DESGLOSE DE FALTAS POR ZONA (Jugador) ---
+        df_faltas_jugador = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == "Faltas"]
+        if not df_faltas_jugador.empty:
+            st.divider()
+            st.markdown(f"### 🟨 Análisis de Faltas - Jugador {jugador_sel}")
+            col_tf_ind, col_gf_ind = st.columns([1.1, 1.0])
+            
+            with col_tf_ind:
+                st.markdown("#### 📋 Desglose por Zona")
+                zona_f_counts = df_faltas_jugador["zona"].fillna("Sin especificar").value_counts().reset_index()
+                zona_f_counts.columns = ["Zona", "Cantidad"]
+                total_zf = zona_f_counts["Cantidad"].sum()
+                zona_f_counts["Porcentaje"] = ((zona_f_counts["Cantidad"] / total_zf) * 100).round(1).astype(str) + "%"
+                st.dataframe(zona_f_counts, use_container_width=True, hide_index=True)
+                
+            with col_gf_ind:
+                st.markdown("#### 📊 Distribución por Zona")
+                fig_torta_f_j = px.pie(
+                    zona_f_counts, values="Cantidad", names="Zona",
+                    color="Zona", color_discrete_sequence=px.colors.qualitative.Pastel1, hole=0.4
+                )
+                fig_torta_f_j.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+                st.plotly_chart(fig_torta_f_j, use_container_width=True, key="torta_zona_faltas_ind")
 
 # =========================================================
 # PESTAÑA 4: PLANTEL DE JUGADORES
