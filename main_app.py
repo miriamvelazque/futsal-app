@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import sqlite3
 import json
 import hashlib  # Para encriptar contraseñas de forma segura
@@ -12,6 +13,10 @@ import os
 import io
 import base64
 from datetime import date
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 PLAYER_PHOTOS_DIR = "player_photos"
 os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
@@ -388,6 +393,141 @@ def insertar_eventos_bulk(conn, df_upload):
     conn.commit()
     return count
 
+def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, df_eventos_filtrados, lista_figuras=None):
+    """
+    Genera un reporte PDF ejecutivo con fondo blanco corporativo y gráficos optimizados sin cortes.
+    """
+    buffer = io.BytesIO()
+    
+    doc = SimpleDocTemplate(
+        buffer, 
+        pagesize=letter, 
+        rightMargin=30, 
+        leftMargin=30, 
+        topMargin=30, 
+        bottomMargin=30
+    )
+    
+    elementos = []
+    estilos = getSampleStyleSheet()
+    
+    estilo_titulo = ParagraphStyle(
+        'TituloPDF', parent=estilos['Heading1'], 
+        fontSize=18, textColor=colors.HexColor('#111827'), spaceAfter=4, fontName='Helvetica-Bold'
+    )
+    estilo_sub = ParagraphStyle(
+        'SubPDF', parent=estilos['Heading2'], 
+        fontSize=13, textColor=colors.HexColor('#1F2937'), spaceBefore=14, spaceAfter=8, fontName='Helvetica-Bold'
+    )
+    estilo_texto = ParagraphStyle(
+        'TextoPDF', parent=estilos['Normal'], 
+        fontSize=9, textColor=colors.HexColor('#374151'), fontName='Helvetica'
+    )
+    
+    # Recuperar datos generales del partido
+    df_partido = pd.read_sql("SELECT * FROM partidos WHERE fecha = ? AND rival = ?", conn, params=(str(fecha_sel), rival_sel))
+    
+    competencia = "Futsal Oficial"
+    lugar = "—"
+    equipo_propio = "Propio"
+    if not df_partido.empty:
+        fila_p = df_partido.iloc[0]
+        competencia = fila_p.get("competencia", "Futsal") or "Futsal"
+        lugar = fila_p.get("lugar", "—")
+        equipo_propio = fila_p.get("equipo_propio", "Propio")
+
+    # --- PORTADA / MEMBRETE SUPERIOR ---
+    elementos.append(Paragraph("INFORME TÉCNICO TÁCTICO — FUTSAL IQ", estilo_titulo))
+    elementos.append(Spacer(1, 6))
+    
+    datos_header = [
+        [Paragraph(f"<b>Fecha:</b> {fecha_sel}", estilo_texto), Paragraph(f"<b>Competencia:</b> {competencia}", estilo_texto)],
+        [Paragraph(f"<b>Rival:</b> {rival_sel}", estilo_texto), Paragraph(f"<b>Lugar / Sede:</b> {lugar}", estilo_texto)],
+        [Paragraph(f"<b>Plantel:</b> {equipo_propio}", estilo_texto), Paragraph(f"<b>Acciones Registradas:</b> {len(df_eventos_filtrados)}", estilo_texto)]
+    ]
+    
+    t_header = Table(datos_header, colWidths=[250, 250])
+    t_header.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F9FAFB')),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#D1D5DB')),
+        ('PADDING', (0,0), (-1,-1), 6),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    ]))
+    elementos.append(t_header)
+    elementos.append(Spacer(1, 10))
+    
+    # --- GRÁFICOS DINÁMICOS (MAPA DE CALOR Y BARRAS) ---
+    if lista_figuras:
+        for titulo_fig, fig in lista_figuras:
+            elementos.append(Paragraph(titulo_fig, estilo_sub))
+            try:
+                # 🛠️ CORRECCIÓN CLAVE: Forzamos fondo blanco, texto oscuro y margen izquierdo amplio para que no se corten las etiquetas
+                fig.update_layout(
+                    paper_bgcolor='white', 
+                    plot_bgcolor='white', 
+                    font=dict(color='#111827', size=11),
+                    width=700, 
+                    height=300, 
+                    margin=dict(t=20, b=20, l=120, r=30)  # Margen izquierdo más grande para el eje Y
+                )
+                img_bytes = pio.to_image(fig, format="png", scale=2)
+                img_io = io.BytesIO(img_bytes)
+                elementos.append(RLImage(img_io, width=480, height=205))
+            except Exception as e:
+                elementos.append(Paragraph(f"<i>(No se pudo renderizar el gráfico: {e})</i>", estilo_texto))
+            elementos.append(Spacer(1, 8))
+
+    elementos.append(PageBreak())
+
+    # --- RESUMEN GLOBAL DE ACCIONES ---
+    elementos.append(Paragraph("📊 Volumen de Acciones por Tipo", estilo_sub))
+    if not df_eventos_filtrados.empty:
+        resumen_eventos = df_eventos_filtrados["tipo_evento"].value_counts().reset_index()
+        resumen_eventos.columns = ["Tipo de Evento", "Cantidad"]
+        
+        data_ev = [["Tipo de Evento", "Cantidad"]] + [[str(row["Tipo de Evento"]), str(row["Cantidad"])] for _, row in resumen_eventos.iterrows()]
+        t_ev = Table(data_ev, colWidths=[300, 200])
+        t_ev.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F2937')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#F9FAFB')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E5E7EB')),
+            ('PADDING', (0,0), (-1,-1), 5),
+        ]))
+        elementos.append(t_ev)
+
+    elementos.append(Spacer(1, 15))
+
+    # --- DESGLOSE POR JUGADOR ---
+    elementos.append(Paragraph("📋 Rendimiento Individual por Jugador (Dorsal)", estilo_sub))
+    df_jugadores = df_eventos_filtrados[df_eventos_filtrados["jugador"] != ""].copy()
+    if not df_jugadores.empty:
+        tabla_indiv = df_jugadores.groupby(["jugador", "tipo_evento"]).size().unstack(fill_value=0).reset_index()
+        tabla_indiv.rename(columns={"jugador": "Dorsal"}, inplace=True)
+        
+        cols = list(tabla_indiv.columns)
+        data_ind = [cols] + [[str(val) for val in row] for _, row in tabla_indiv.iterrows()]
+        
+        ancho_col = 500 / max(len(cols), 1)
+        t_ind = Table(data_ind, colWidths=[ancho_col]*len(cols))
+        t_ind.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F2937')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,1), (-1,-1), colors.white),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
+            ('PADDING', (0,0), (-1,-1), 4),
+        ]))
+        elementos.append(t_ind)
+    else:
+        elementos.append(Paragraph("No hay registros de jugadores para este filtro.", estilo_texto))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer
 
 def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado="", tipo_tarjeta="", tipo_abp="", x=None, y=None):
     """Inserta un único evento con coordenadas X e Y exactas en la tabla."""
@@ -1478,7 +1618,7 @@ def render_dashboard_general(conn):
     col1, col2, col3, col4, col5 = st.columns(5)
     render_kpi_card(col1, "Acciones Filtradas", len(df_filtrado), color_acento="#4158f6")
 
-    # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto Goles como Atajados
+    # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto "Gol", "Atajado", "Desviado", "Bloqueado"
     tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
     render_kpi_card(col2, "Cantidad de finalizaciones", tiros_efectivos, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
 
@@ -1808,6 +1948,34 @@ def render_dashboard_general(conn):
                     st.plotly_chart(fig_top3, use_container_width=True, key=f"top3_{tipo_evento_analisis}")
                 else:
                     st.info("Sin datos suficientes.")
+
+# --- EXPORTAR REPORTE PDF DEL PARTIDO ---
+    st.divider()
+    col_pdf1, col_pdf2 = st.columns([2, 1])
+    with col_pdf1:
+        st.markdown("### 📄 Exportar Reporte Ejecutivo Pro")
+        st.write("Generá un documento PDF completo con membrete, mapa de calor, gráficos de rendimiento y tablas detalladas.")
+    with col_pdf2:
+        if partido_sel != "Todos" and " - " in partido_sel:
+            fecha_actual, rival_actual = partido_sel.split(" - ", 1)
+            
+            # 📌 Nombres corregidos según tus variables reales:
+            figuras_a_exportar = [
+                ("📍 Mapa de Calor Táctico", fig_heatmap_general), 
+                ("📊 Distribución de Volumen Táctico", fig_barras_tipo) 
+            ]
+            
+            pdf_buffer = generar_pdf_partido_avanzado(conn, fecha_actual, rival_actual, df_filtrado, lista_figuras=figuras_a_exportar)
+            
+            st.download_button(
+                label="📥 Descargar PDF Pro",
+                data=pdf_buffer,
+                file_name=f"Reporte_Tactico_{rival_actual}_{fecha_actual}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        else:
+            st.info("💡 Seleccioná un partido específico en el filtro superior para habilitar la descarga.")
 
 # =========================================================
 # PESTAÑA 3: RENDIMIENTO INDIVIDUAL
