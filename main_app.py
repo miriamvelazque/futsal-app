@@ -327,6 +327,29 @@ def init_db(conn):
         clave_dt = encriptar_clave(pass_dt)
         c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)", 
                   ("dt_troncos", clave_dt, "Lector"))
+
+    # Alta de usuarios nuevos (Jugador / Entrenador). A diferencia del bloque de arriba,
+    # este chequea usuario por usuario (no si la tabla está vacía), para que funcione
+    # también sobre la base que ya tenías corriendo con admin/dt_troncos ya creados.
+    c.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = ?", ("jugador",))
+    if c.fetchone()[0] == 0:
+        try:
+            pass_jugador = st.secrets["credentials"]["jugador_pass"]
+        except Exception:
+            pass_jugador = "jugador123"
+        clave_jugador = encriptar_clave(pass_jugador)
+        c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)",
+                  ("jugador", clave_jugador, "Jugador"))
+
+    c.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = ?", ("entrenador",))
+    if c.fetchone()[0] == 0:
+        try:
+            pass_entrenador = st.secrets["credentials"]["entrenador_pass"]
+        except Exception:
+            pass_entrenador = "entrenador123"
+        clave_entrenador = encriptar_clave(pass_entrenador)
+        c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)",
+                  ("entrenador", clave_entrenador, "Entrenador")) 
         
      # Migración futura de columnas (mismo patrón que usás en partidos)
     c.execute("PRAGMA table_info(jugadores)")
@@ -2638,7 +2661,33 @@ def main():
         with tab3:
             render_rendimiento_individual(conn)
         with tab4:
+            render_jugadores(conn, rol_actual)        
+            
+    elif rol_actual == "Entrenador":
+        # Mismo alcance que "Lector" hoy: Dashboard, Rendimiento Individual y Plantel
+        # (el plantel queda en solo lectura porque render_jugadores ya gatea la edición
+        # con rol_actual == "Administrador").
+        renderizar_banner_topo()
+        renderizar_header("Futsal IQ Analyzer - Panel Entrenador")
+        tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
+
+        with tab2:
+            render_dashboard_general(conn)
+        with tab3:
+            render_rendimiento_individual(conn)
+        with tab4:
             render_jugadores(conn, rol_actual)
+
+    elif rol_actual == "Jugador":
+        # Acceso más acotado: solo Dashboard General y Rendimiento Individual, sin Plantel.
+        renderizar_banner_topo()
+        renderizar_header("Futsal IQ Analyzer - Panel Jugador")
+        tab2, tab3 = st.tabs(["Dashboard General", "Rendimiento Individual"])
+
+        with tab2:
+            render_dashboard_general(conn)
+        with tab3:
+            render_rendimiento_individual(conn)
 
     renderizar_footer()
 
