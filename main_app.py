@@ -13,10 +13,20 @@ import os
 import io
 import base64
 from datetime import date
-from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+
+# --- IMPORTACIONES SEGURAS DE REPORTLAB ---
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    import plotly.io as pio
+    REPORTLAB_DISPONIBLE = True
+except ImportError:
+    REPORTLAB_DISPONIBLE = False
 
 PLAYER_PHOTOS_DIR = "player_photos"
 os.makedirs(PLAYER_PHOTOS_DIR, exist_ok=True)
@@ -1956,10 +1966,11 @@ def render_dashboard_general(conn):
         st.markdown("### 📄 Exportar Reporte Ejecutivo Pro")
         st.write("Generá un documento PDF completo con membrete, mapa de calor, gráficos de rendimiento y tablas detalladas.")
     with col_pdf2:
-        if partido_sel != "Todos" and " - " in partido_sel:
+        if not REPORTLAB_DISPONIBLE:
+            st.warning("⚠️ Módulo PDF en preparación.")
+        elif partido_sel != "Todos" and " - " in partido_sel:
             fecha_actual, rival_actual = partido_sel.split(" - ", 1)
             
-            # 📌 Nombres corregidos según tus variables reales:
             figuras_a_exportar = [
                 ("📍 Mapa de Calor Táctico", fig_heatmap_general), 
                 ("📊 Distribución de Volumen Táctico", fig_barras_tipo) 
