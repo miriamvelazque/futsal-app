@@ -1119,17 +1119,17 @@ def render_carga_datos(conn):
     st.header("📥 Carga de Datos")
 
     # 🚨 BOTÓN DE EMERGENCIA SEGURO PARA ELIMINAR BASE DE DATOS Y EMPEZAR DE CERO
-    st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
-    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
-        import os
-        conn.close()
-        if os.path.exists("futsal.db"):
-            os.remove("futsal.db")
-            st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
-            time.sleep(2)
-            st.rerun()
+    #st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
+    #if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
+    #    import os
+    #    conn.close()
+    #    if os.path.exists("futsal.db"):
+    #        os.remove("futsal.db")
+    #        st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
+    #        time.sleep(2)
+    #        st.rerun()
 
-    st.divider()
+    #st.divider()
 
     # =====================================================
     # CARGAR EVENTOS (CSV/Excel del coach, o un partido exportado) / EXPORTAR PARTIDO
