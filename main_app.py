@@ -2204,7 +2204,7 @@ def render_rendimiento_individual(conn):
 def render_jugadores(conn, rol_actual):
     st.header("🪪 Plantel de Jugadores")
 
-    POSICIONES = ["Arquero", "Cierre", "Ala Derecha", "Ala Izquierda", "Pivot", "Universal"]
+    POSICIONES = ["Arquero", "Cierre", "Ala Derecha", "Ala Izquierda", "Pivot", "Falso Pivot"]
     PIES = ["Derecho", "Izquierdo", "Ambidiestro"]
     GRUPOS_SANGUINEOS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Desconocido"]
     ESTADOS = ["Habilitado", "Lesionado", "Suspendido", "Inactivo"]
