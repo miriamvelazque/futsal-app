@@ -562,20 +562,20 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, df_eventos_filtrado
     buffer.seek(0)
     return buffer
 
-def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado="", tipo_tarjeta="", tipo_abp="", x=None, y=None):
-    """Inserta un único evento con coordenadas X e Y exactas en la tabla."""
-    c = conn.cursor()
-    c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-              (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y))
-    conn.commit()
-
 def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inicio_1t,
-                              pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival, competencia=""):
-    """Inserta o actualiza (upsert) el registro de partido con los datos de posesión por tiempo."""
+                             pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival, competencia=""):
+    """Inserta o actualiza (upsert) el registro de partido con los datos de posesión por tiempo en formato decimal."""
+    
+    # Convertimos los valores de posesión a float para admitir decimales (ej. 50.25)
+    pos_1t_propio = float(pos_1t_propio) if pos_1t_propio != "" else 0.0
+    pos_1t_rival = float(pos_1t_rival) if pos_1t_rival != "" else 0.0
+    pos_2t_propio = float(pos_2t_propio) if pos_2t_propio != "" else 0.0
+    pos_2t_rival = float(pos_2t_rival) if pos_2t_rival != "" else 0.0
+
     c = conn.cursor()
     c.execute("SELECT id FROM partidos WHERE fecha = ? AND rival = ?", (str(fecha), rival))
     existente = c.fetchone()
+    
     if existente:
         c.execute("""UPDATE partidos SET equipo_propio=?, lugar=?, lado_inicio_1t=?, competencia=?,
                      posesion_1t_propio_seg=?, posesion_1t_rival_seg=?,
@@ -1152,17 +1152,18 @@ def render_carga_datos(conn):
     st.header("📥 Carga de Datos")
 
     # 🚨 BOTÓN DE EMERGENCIA SEGURO PARA ELIMINAR BASE DE DATOS Y EMPEZAR DE CERO
-    #st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
-    #if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
-    #    import os
-    #    conn.close()
-    #    if os.path.exists("futsal.db"):
-    #        os.remove("futsal.db")
-    #        st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
-    #        time.sleep(2)
-    #        st.rerun()
+    st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
+    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
+        st.warning("⚠️ Esto eliminará **toda la base de datos** y no se puede deshacer. Se recomienda hacer un backup antes de continuar.")
+        if st.button("✅ Confirmar eliminación de la base de datos", type="primary", use_container_width=True, key="btn_confirmar_eliminar_bd"):    
+            conn.close()
+            if os.path.exists("futsal.db"):
+                os.remove("futsal.db")
+                st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
+                time.sleep(2)
+            st.rerun()
 
-    #st.divider()
+    st.divider()
 
     # =====================================================
     # CARGAR EVENTOS (CSV/Excel del coach, o un partido exportado) / EXPORTAR PARTIDO
