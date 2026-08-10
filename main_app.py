@@ -13,9 +13,6 @@ import os
 import io
 import base64
 from datetime import date
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
 
 # --- IMPORTACIONES SEGURAS DE REPORTLAB ---
 try:
@@ -383,6 +380,21 @@ def cargar_eventos_df(conn, limit=None):
         query = "SELECT * FROM eventos ORDER BY id DESC"
         df = pd.read_sql(query, conn)
     return df if not df.empty else None
+
+
+def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo,
+                               jugador="", zona="", resultado="", tipo_tarjeta="",
+                               tipo_abp="", x=None, y=None):
+    """Inserta un evento registrado desde la carga rápida."""
+    conn.execute(
+        """INSERT INTO eventos (
+            fecha, rival, tipo_evento, tiempo, equipo, jugador, zona,
+            resultado, tipo_tarjeta, tipo_abp, x, y
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona,
+         resultado, tipo_tarjeta, tipo_abp, x, y),
+    )
+    conn.commit()
 
 
 def insertar_eventos_bulk(conn, df_upload):
@@ -1151,17 +1163,33 @@ def extraer_punto_click(evento_click):
 def render_carga_datos(conn):
     st.header("📥 Carga de Datos")
 
-    # 🚨 BOTÓN DE EMERGENCIA SEGURO PARA ELIMINAR BASE DE DATOS Y EMPEZAR DE CERO
-    st.warning("⚠️ **Zona de Reajuste:** Si querés borrar todos los datos de prueba anteriores para cargar tus partidos reales, usá este botón.")
-    if st.button("🗑️ ELIMINAR BASE DE DATOS DE PRUEBA Y EMPEZAR DE CERO", type="primary", use_container_width=True, key="btn_eliminar_bd"):
-        st.warning("⚠️ Esto eliminará **toda la base de datos** y no se puede deshacer. Se recomienda hacer un backup antes de continuar.")
-        if st.button("✅ Confirmar eliminación de la base de datos", type="primary", use_container_width=True, key="btn_confirmar_eliminar_bd"):    
-            conn.close()
-            if os.path.exists("futsal.db"):
-                os.remove("futsal.db")
-                st.success("💥 ¡Base de datos borrada con éxito! Reiniciando sistema en limpio...")
-                time.sleep(2)
+    # Inicializar estado de confirmación
+    if "confirmar_borrado_eventos" not in st.session_state:
+        st.session_state["confirmar_borrado_eventos"] = False
+
+    st.warning("⚠️ **Zona de Reajuste:** Si querés borrar los eventos y partidos de prueba, usá este botón. El plantel de jugadores NO se toca.")
+    
+    if not st.session_state["confirmar_borrado_eventos"]:
+        if st.button("🗑️ ELIMINAR EVENTOS Y PARTIDOS", type="primary", use_container_width=True, key="btn_eliminar_bd"):
+            st.session_state["confirmar_borrado_eventos"] = True
             st.rerun()
+    else:
+        st.error("⚠️ ¿Confirmás que querés borrar **todos los eventos y partidos**? Esta acción no se puede deshacer.")
+        col_si, col_no = st.columns(2)
+        with col_si:
+            if st.button("✅ Sí, borrar eventos y partidos", type="primary", use_container_width=True, key="btn_confirmar_eliminar_bd"):
+                c = conn.cursor()
+                c.execute("DELETE FROM eventos")
+                c.execute("DELETE FROM partidos")
+                conn.commit()
+                st.session_state["confirmar_borrado_eventos"] = False
+                st.success("✅ Eventos y partidos eliminados. El plantel quedó intacto.")
+                time.sleep(2)
+                st.rerun()
+        with col_no:
+            if st.button("❌ Cancelar", use_container_width=True, key="btn_cancelar_eliminar_bd"):
+                st.session_state["confirmar_borrado_eventos"] = False
+                st.rerun()
 
     st.divider()
 
