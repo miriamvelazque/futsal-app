@@ -348,7 +348,7 @@ def init_db(conn):
         c.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)",
                   ("entrenador", clave_entrenador, "Entrenador")) 
         
-     # Migración futura de columnas (mismo patrón que usás en partidos)
+     # Migración futura de columnas (mismo patrón que usamos en partidos)
     c.execute("PRAGMA table_info(jugadores)")
     columnas_jugadores = [col[1] for col in c.fetchall()]
     nuevas_columnas_jugadores = {
@@ -1675,12 +1675,104 @@ def render_dashboard_general(conn):
     if tiempo_sel != "Todos":
        df_filtrado = df_filtrado[df_filtrado["tiempo"] == tiempo_sel]   
 
-    # --- INDICADORES ---
+    # =========================================================
+    # 1. SECCIÓN DE RESULTADO DEL PARTIDO (ARRIBA)
+    # =========================================================
+    st.markdown("### ⚽ Resultado del Partido")
+
+    # Definir nombres completos de los equipos
+    nombre_equipo_propio = "Equipo Propio"  # Cambiar según tu lógica
+    nombre_equipo_rival = "Equipo Rival"
+
+    # Filtro base de eventos de gol (excluyendo ABP)
+    eventos_gol_base = df_filtrado[
+        (df_filtrado["resultado"].str.lower().str.contains("gol", na=False)) & 
+        (df_filtrado["tipo_evento"].str.lower() != "abp")
+    ]
+
+    # Creamos las dos columnas principales de la sección
+    # Columna izquierda (Ancho 1.2): Selector de tiempo y tarjeta de marcador
+    # Columna derecha (Ancho 1.8): Título y tabla de goleadores (alineados arriba)
+    col_izq_res, col_der_gol = st.columns([1.2, 1.8], gap="medium")
+
+    with col_izq_res:
+        # 1. El selector de tiempo queda arriba a la izquierda, alineado con la tabla
+        modo_tiempo = st.radio(
+            "Filtrar por tiempo:",
+            options=["Partido Completo", "1º Tiempo (1T)", "2º Tiempo (2T)"],
+            horizontal=True,
+            key="radio_tiempo_goles"
+        )
+
+    with col_der_gol:
+        # Ajustá los píxeles (-25px) para subir o bajar el título y la tabla
+        st.markdown("""
+            <div style="margin-top: 25px;">
+                <h4 style="margin-bottom: 0px;">⛹️ Autores de los Goles</h4>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Filtrar eventos de gol según la selección del radio button
+    if "1T" in modo_tiempo:
+        eventos_gol = eventos_gol_base[eventos_gol_base["tiempo"] == "1T"]
+        label_marcador = "MARCADOR PARCIAL (1º TIEMPO)"
+    elif "2T" in modo_tiempo:
+        eventos_gol = eventos_gol_base[eventos_gol_base["tiempo"] == "2T"]
+        label_marcador = "MARCADOR PARCIAL (2º TIEMPO)"
+    else:
+        eventos_gol = eventos_gol_base
+        label_marcador = "MARCADOR FINAL"
+
+    # Calcular goles según el filtro activo
+    goles_propio = len(eventos_gol[eventos_gol["equipo"].str.lower() == "propio"])
+    goles_rival = len(eventos_gol[eventos_gol["equipo"].str.lower() == "rival"])
+
+    # Volvemos a usar las dos columnas para ubicar el marcador abajo del selector y la tabla abajo del título
+    col_izq_res_tarjeta, col_der_gol_tabla = st.columns([1.2, 1.8], gap="medium")
+
+    with col_izq_res_tarjeta:
+        # Tarjeta de resultado grande con nombres de equipos
+        st.markdown(f"""
+        <div style="background:#12141c; border:1px solid #2a2d3a; border-radius:12px; padding:24px; text-align:center; height:100%; display:flex; flex-direction:column; justify-content:center;">
+            <div style="font-size:11px; color:#9CA3AF; letter-spacing:2px; margin-bottom:12px;">{label_marcador}</div>
+            <div style="display: flex; justify-content: space-around; align-items: center; width: 100%;">
+                <div style="font-size:16px; font-weight:600; color:#E5E7EB; width: 35%; text-align: right; word-break: break-word;">{nombre_equipo_propio}</div>
+                <div style="font-size:32px; font-weight:700; color:white; width: 30%; text-align: center;">
+                    <span style="color:#2ecc71;">{goles_propio}</span> - <span style="color:#e74c3c;">{goles_rival}</span>
+                </div>
+                <div style="font-size:16px; font-weight:600; color:#E5E7EB; width: 35%; text-align: left; word-break: break-word;">{nombre_equipo_rival}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_der_gol_tabla:
+        df_goles_propios = eventos_gol[eventos_gol["equipo"].str.lower() == "propio"]
+        
+        if not df_goles_propios.empty and "jugador" in df_goles_propios.columns:
+            goleadores_df = df_goles_propios["jugador"].replace("", "Sin especificar").value_counts().reset_index()
+            goleadores_df.columns = ["Jugador", "Goles"]
+            
+            st.dataframe(
+                goleadores_df,
+                column_config={
+                    "Jugador": st.column_config.TextColumn("Jugador"),
+                    "Goles": st.column_config.NumberColumn("Cantidad", format="%d ⚽")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No hay registros de autores de goles para este filtro.")
+
     st.divider()
+
+    # =========================================================
+    # 2. TARJETAS KPI (AHORA DEBAJO DEL RESULTADO)
+    # =========================================================
+    st.markdown("### 📊 Indicadores del Rendimiento")
     col1, col2, col3, col4, col5 = st.columns(5)
     render_kpi_card(col1, "Acciones Filtradas", len(df_filtrado), color_acento="#4158f6")
 
-    # ⭐ CORRECCIÓN: Contamos como tiros al arco tanto "Gol", "Atajado", "Desviado", "Bloqueado"
     tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
     render_kpi_card(col2, "Cantidad de finalizaciones", tiros_efectivos, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
 
