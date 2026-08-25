@@ -287,6 +287,8 @@ def init_db(conn):
         c.execute("ALTER TABLE eventos ADD COLUMN y REAL")
     if "tipo_abp" not in columnas_eventos:
         c.execute("ALTER TABLE eventos ADD COLUMN tipo_abp TEXT")
+    if "tipo_finalizacion" not in columnas_eventos:
+        c.execute("ALTER TABLE eventos ADD COLUMN tipo_finalizacion TEXT")
 
     # Asegurar columnas nuevas en tabla partidos
     c.execute("PRAGMA table_info(partidos)")
@@ -384,15 +386,15 @@ def cargar_eventos_df(conn, limit=None):
 
 def insertar_evento_individual(conn, fecha, rival, tipo_evento, tiempo, equipo,
                                jugador="", zona="", resultado="", tipo_tarjeta="",
-                               tipo_abp="", x=None, y=None):
+                               tipo_abp="", x=None, y=None, tipo_finalizacion=""):
     """Inserta un evento registrado desde la carga rápida."""
     conn.execute(
         """INSERT INTO eventos (
             fecha, rival, tipo_evento, tiempo, equipo, jugador, zona,
-            resultado, tipo_tarjeta, tipo_abp, x, y
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            resultado, tipo_tarjeta, tipo_abp, x, y, tipo_finalizacion
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (str(fecha), rival, tipo_evento, tiempo, equipo, jugador, zona,
-         resultado, tipo_tarjeta, tipo_abp, x, y),
+         resultado, tipo_tarjeta, tipo_abp, x, y, tipo_finalizacion),
     )
     conn.commit()
 
@@ -428,147 +430,866 @@ def insertar_eventos_bulk(conn, df_upload):
         resultado = str(row.get("resultado", "")) if not pd.isna(row.get("resultado", "")) else ""
         tipo_tarjeta = str(row.get("tipo_tarjeta", "")) if not pd.isna(row.get("tipo_tarjeta", "")) else ""
         tipo_abp = str(row.get("tipo_abp", "")) if not pd.isna(row.get("tipo_abp", "")) else ""
+        tipo_finalizacion = str(row.get("tipo_finalizacion", "")) if not pd.isna(row.get("tipo_finalizacion", "")) else ""
         x = row.get("x", None)
         y = row.get("y", None)
 
-        c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y))
+        c.execute("""INSERT INTO eventos (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y, tipo_finalizacion)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (fecha, rival, tipo_evento, tiempo, equipo, jugador, zona, resultado, tipo_tarjeta, tipo_abp, x, y, tipo_finalizacion))
         count += 1
     conn.commit()
     return count
 
-def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, df_eventos_filtrados, lista_figuras=None):
+def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lista_figuras=None):
     """
-    Genera un reporte PDF ejecutivo con fondo blanco corporativo y gráficos optimizados sin cortes.
-    """
-    buffer = io.BytesIO()
-    
-    doc = SimpleDocTemplate(
-        buffer, 
-        pagesize=letter, 
-        rightMargin=30, 
-        leftMargin=30, 
-        topMargin=30, 
-        bottomMargin=30
-    )
-    
-    elementos = []
-    estilos = getSampleStyleSheet()
-    
-    estilo_titulo = ParagraphStyle(
-        'TituloPDF', parent=estilos['Heading1'], 
-        fontSize=18, textColor=colors.HexColor('#111827'), spaceAfter=4, fontName='Helvetica-Bold'
-    )
-    estilo_sub = ParagraphStyle(
-        'SubPDF', parent=estilos['Heading2'], 
-        fontSize=13, textColor=colors.HexColor('#1F2937'), spaceBefore=14, spaceAfter=8, fontName='Helvetica-Bold'
-    )
-    estilo_texto = ParagraphStyle(
-        'TextoPDF', parent=estilos['Normal'], 
-        fontSize=9, textColor=colors.HexColor('#374151'), fontName='Helvetica'
-    )
-    
-    # Recuperar datos generales del partido
-    df_partido = pd.read_sql("SELECT * FROM partidos WHERE fecha = ? AND rival = ?", conn, params=(str(fecha_sel), rival_sel))
-    
-    competencia = "Futsal Oficial"
-    lugar = "—"
-    equipo_propio = "Propio"
-    if not df_partido.empty:
-        fila_p = df_partido.iloc[0]
-        competencia = fila_p.get("competencia", "Futsal") or "Futsal"
-        lugar = fila_p.get("lugar", "—")
-        equipo_propio = fila_p.get("equipo_propio", "Propio")
+    Reporte PDF estructurado por tiempo (1T / 2T / Total) siguiendo la metodología
+    del analista: heatmap + análisis + torta + top3 en una misma página por sección.
 
-    # --- PORTADA / MEMBRETE SUPERIOR ---
-    elementos.append(Paragraph("INFORME TÉCNICO TÁCTICO — FUTSAL IQ", estilo_titulo))
-    elementos.append(Spacer(1, 6))
-    
-    datos_header = [
-        [Paragraph(f"<b>Fecha:</b> {fecha_sel}", estilo_texto), Paragraph(f"<b>Competencia:</b> {competencia}", estilo_texto)],
-        [Paragraph(f"<b>Rival:</b> {rival_sel}", estilo_texto), Paragraph(f"<b>Lugar / Sede:</b> {lugar}", estilo_texto)],
-        [Paragraph(f"<b>Plantel:</b> {equipo_propio}", estilo_texto), Paragraph(f"<b>Acciones Registradas:</b> {len(df_eventos_filtrados)}", estilo_texto)]
+    BUG FIX: siempre recarga los eventos desde la DB usando solo fecha+rival,
+    ignorando cualquier filtro activo en el dashboard, para que los números
+    del PDF coincidan siempre con el total real del partido.
+
+    Espejo de 2T: si en 1T el equipo atacaba hacia la derecha, en 2T ataca hacia
+    la izquierda → las coordenadas del heatmap de 2T se invierten (x=40-x, y=20-y)
+    para que el mapa siempre se lea con el ataque yendo a la derecha.
+    """
+    import io as _io
+
+    # ── FIX: recargar desde DB sin filtros de pantalla ───────────────────────
+    df_partido_completo = pd.read_sql(
+        "SELECT * FROM eventos WHERE fecha = ? AND rival = ?",
+        conn, params=(str(fecha_sel), rival_sel)
+    )
+    if df_partido_completo.empty:
+        buf = _io.BytesIO()
+        buf.write(b"%PDF-1.4\n")
+        buf.seek(0)
+        return buf
+
+    # Normalizar columnas numéricas
+    for col_num in ["x", "y"]:
+        if col_num in df_partido_completo.columns:
+            df_partido_completo[col_num] = pd.to_numeric(df_partido_completo[col_num], errors="coerce")
+
+    df_ev = df_partido_completo  # alias corto
+
+    buffer = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
+    )
+
+    COLOR_VERDE  = colors.HexColor("#8DC63F")
+    COLOR_OSCURO = colors.HexColor("#1F2937")
+    COLOR_GRIS   = colors.HexColor("#F3F4F6")
+    COLOR_TEXTO  = colors.HexColor("#111827")
+
+    estilos = getSampleStyleSheet()
+
+    est_titulo = ParagraphStyle("Titulo", parent=estilos["Normal"],
+        fontSize=18, fontName="Helvetica-Bold", textColor=COLOR_OSCURO,
+        spaceAfter=2, leading=22)
+    est_subtitulo = ParagraphStyle("Subtitulo", parent=estilos["Normal"],
+        fontSize=9, fontName="Helvetica", textColor=colors.HexColor("#6B7280"),
+        spaceAfter=4, leading=13)
+    est_seccion = ParagraphStyle("Seccion", parent=estilos["Normal"],
+        fontSize=13, fontName="Helvetica-Bold", textColor=COLOR_OSCURO,
+        spaceBefore=4, spaceAfter=4, leading=16)
+    est_sub = ParagraphStyle("Sub", parent=estilos["Normal"],
+        fontSize=11, fontName="Helvetica-Bold", textColor=COLOR_OSCURO,
+        spaceBefore=6, spaceAfter=4)
+    est_cuerpo = ParagraphStyle("Cuerpo", parent=estilos["Normal"],
+        fontSize=9, fontName="Helvetica", textColor=COLOR_TEXTO, leading=14)
+    est_resumen = ParagraphStyle("Resumen", parent=estilos["Normal"],
+        fontSize=10, fontName="Helvetica", textColor=COLOR_TEXTO,
+        leading=16, spaceAfter=4)
+    est_caption = ParagraphStyle("Caption", parent=estilos["Normal"],
+        fontSize=8, fontName="Helvetica", textColor=colors.HexColor("#6B7280"),
+        spaceAfter=4)
+    est_footer = ParagraphStyle("Footer", parent=estilos["Normal"],
+        fontSize=7, fontName="Helvetica",
+        textColor=colors.HexColor("#9CA3AF"), alignment=1)
+
+    elementos = []
+
+    # ── HELPERS ──────────────────────────────────────────────────────────────
+
+    def linea_verde():
+        from reportlab.platypus import HRFlowable
+        return HRFlowable(width="100%", thickness=2,
+                          color=COLOR_VERDE, spaceAfter=6, spaceBefore=2)
+
+    def tabla_simple(data, col_widths):
+        t = Table(data, colWidths=col_widths)
+        t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),  COLOR_OSCURO),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, COLOR_GRIS]),
+            ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
+            ("PADDING",       (0, 0), (-1, -1), 5),
+            ("ALIGN",         (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        return t
+
+    def fig_a_imagen(fig, ancho_pts=500, alto_pts=210):
+        """Renderiza figura Plotly → imagen ReportLab. Devuelve None si falla."""
+        try:
+            fig_c = go.Figure(fig)
+            fig_c.update_layout(
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(color="#111827", size=10),
+                width=750, height=320,
+                margin=dict(t=30, b=60, l=20, r=20)
+            )
+            img_bytes = pio.to_image(fig_c, format="png", scale=2)
+            return RLImage(_io.BytesIO(img_bytes), width=ancho_pts, height=alto_pts)
+        except Exception:
+            return None
+
+    def heatmap_pdf_blanco(df_sub, titulo_mapa, rotar_180=False):
+        """
+        Genera heatmap de un subconjunto de eventos (ya filtrados por tipo/tiempo/equipo).
+        rotar_180=True aplica rotación de 180° (x' = 100-x, y' = 60-y) para mostrar
+        los eventos del 2T desde el lado real de ataque de ese tiempo.
+        En la DB los eventos están normalizados con el ataque apuntando a la derecha;
+        rotar_180 los invierte para mostrar el lado opuesto cuando corresponde.
+        """
+        if df_sub is None or df_sub.empty:
+            return None
+        df_c = df_sub.copy()
+        df_c["x"] = pd.to_numeric(df_c["x"], errors="coerce")
+        df_c["y"] = pd.to_numeric(df_c["y"], errors="coerce")
+        df_c = df_c.dropna(subset=["x", "y"])
+        if df_c.empty:
+            return None
+
+        if rotar_180:
+            df_c["x"] = 100.0 - df_c["x"]
+            df_c["y"] = 60.0  - df_c["y"]
+
+        fig = generar_heatmap_analisis(df_c, titulo_mapa=titulo_mapa)
+        fig.update_layout(
+            paper_bgcolor="white", plot_bgcolor="white",
+            font=dict(color="#111827"),
+            title=dict(font=dict(color="#111827")),
+            legend=dict(font=dict(color="#111827")),
+        )
+        return fig_a_imagen(fig, ancho_pts=500, alto_pts=210)
+
+    def torta_imagen(df_sub, col, mapa_colores=None, color_seq=None,
+                     ancho_pts=200, alto_pts=190):
+        """Torta genérica de una columna dada. Devuelve imagen RL o None."""
+        if df_sub is None or df_sub.empty or col not in df_sub.columns:
+            return None
+        counts = df_sub[col].fillna("Sin especificar").value_counts().reset_index()
+        counts.columns = ["Valor", "Cantidad"]
+        if counts.empty:
+            return None
+        kwargs = dict(values="Cantidad", names="Valor", hole=0.4)
+        if mapa_colores:
+            fig = px.pie(counts, color="Valor", color_discrete_map=mapa_colores, **kwargs)
+        else:
+            fig = px.pie(counts, color_discrete_sequence=color_seq or px.colors.qualitative.Set2, **kwargs)
+        fig.update_traces(textinfo="percent+label", textposition="inside",
+                          textfont=dict(size=8))
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center",
+                        font=dict(size=8, color="#111827")),
+            margin=dict(t=10, b=45, l=10, r=10),
+            paper_bgcolor="white", plot_bgcolor="white",
+            font=dict(color="#111827", size=8),
+            width=ancho_pts * 1.5,   # ✅ Escala proporcional a ancho_pts
+            height=alto_pts * 1.5,  # ✅ Escala proporcional a alto_pts
+        )
+        try:
+            img_bytes = pio.to_image(fig, format="png", scale=2)
+            return RLImage(_io.BytesIO(img_bytes), width=ancho_pts, height=alto_pts)
+        except Exception:
+            return None
+
+    def barras_top3_imagen(df_sub, col, color_barra="#F6E05E",
+                           ancho_pts=380, alto_pts=120, mapa_dorsal_nombre=None):
+        """Gráfico de barras horizontales Top-3 jugadores con etiquetas DENTRO de la barra.
+        - Si mapa_dorsal_nombre es un dict {dorsal_str: 'Apellido Nombre'},
+          muestra el nombre completo como etiqueta encima de cada barra (textposition='outside')
+          y el eje Y queda limpio (solo números / vacío) para no encimar texto.
+        - Si no hay mapa, muestra el dorsal en el eje Y como siempre.
+        Devuelve imagen RL o None."""
+        if df_sub is None or df_sub.empty or col not in df_sub.columns:
+            return None
+        top = (df_sub[col].replace("", pd.NA).dropna()
+               .value_counts().head(3).reset_index())
+        top.columns = ["Jugador", "Cantidad"]
+        if top.empty:
+            return None
+
+        con_nombres = bool(mapa_dorsal_nombre)
+
+        if con_nombres:
+            # Resolvemos el nombre para la etiqueta de texto sobre la barra
+            top["NombreLabel"] = top["Jugador"].apply(
+                lambda d: mapa_dorsal_nombre.get(str(d), f"#{d}")
+            )
+            top_s = top.sort_values("Cantidad", ascending=True)
+            # La barra muestra "Nombre (N)" como etiqueta encima; eje Y con dorsal corto
+            top_s["TextoBarra"] = top_s.apply(
+                lambda r: f"{r['NombreLabel']} ({int(r['Cantidad'])})", axis=1
+            )
+            fig = px.bar(top_s, x="Cantidad", y="Jugador", orientation="h",
+                         text="TextoBarra", color_discrete_sequence=[color_barra])
+            fig.update_traces(
+                textposition="inside",          # ⭐ Texto DENTRO de la barra
+                insidetextanchor="start",        # ⭐ Alineado al inicio del texto
+                textfont=dict(size=9, color="#0F172A"), # Color oscuro para buen contraste
+            )
+            fig.update_layout(
+                height=150, width=500,
+                margin=dict(t=10, b=10, l=30, r=20), # Margen derecho reducido
+                showlegend=False,
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(color="#111827", size=9),
+                yaxis=dict(type="category", tickfont=dict(size=9, color="#1E293B")),
+                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+            )
+        else:
+            top_s = top.sort_values("Cantidad", ascending=True)
+            fig = px.bar(top_s, x="Cantidad", y="Jugador", orientation="h",
+                         text="Cantidad", color_discrete_sequence=[color_barra])
+            fig.update_traces(
+                textposition="inside",
+                insidetextanchor="start",
+               textfont=dict(size=9, color="#0F172A")
+            )
+            fig.update_layout(
+                height=140, width=450,
+                margin=dict(t=10, b=10, l=30, r=20),
+                showlegend=False,
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(color="#111827", size=9),
+                yaxis=dict(type="category"),
+                xaxis=dict(showgrid=False),
+            )
+        try:
+            img_bytes = pio.to_image(fig, format="png", scale=2)
+            return RLImage(_io.BytesIO(img_bytes), width=ancho_pts, height=alto_pts)
+        except Exception:
+            return None
+
+    # ── Cabecera de sección de evento (título + subtítulo de tiempo + línea) ──
+    def header_seccion(emoji, nombre_tipo, nombre_tiempo, cantidad, equipo_label):
+        """Cabecera estilizada: 'FINALIZACIONES RIO GRANDE — PRIMER TIEMPO (20 FINALIZACIONES)'"""
+        titulo_txt = f"{emoji} {nombre_tipo.upper()} {equipo_label.upper()}"
+        sub_txt    = f"{nombre_tiempo.upper()} ({cantidad} {nombre_tipo.upper()})"
+        elementos.append(Paragraph(titulo_txt, est_seccion))
+        elementos.append(Paragraph(sub_txt,    est_caption))
+        elementos.append(linea_verde())
+
+    # ── Layout de una página de tipo de evento ────────────────────────────────
+    def pagina_evento(df_sub, emoji, nombre_tipo, nombre_tiempo, equipo_label,
+                      rotar_180=False, es_finalizaciones=False,
+                      color_zona_seq=None, color_barra="#4ECDC4",
+                      mapa_dorsal_nombre=None):
+        """
+        Una página PDF con el layout del analista:
+          - Heatmap arriba (ancho completo)
+          - Fila 1: tabla zona | torta
+          - Fila 2: top3 con nombres a ancho completo abajo
+        rotar_180=True: aplica rotación 180° al heatmap para mostrar el lado real de ataque.
+        """
+        if df_sub is None or df_sub.empty:
+            return
+
+        cantidad = len(df_sub)
+        elementos.append(PageBreak())
+        header_seccion(emoji, nombre_tipo, nombre_tiempo, cantidad, equipo_label)
+
+        # Heatmap
+        img_hm = heatmap_pdf_blanco(df_sub, f"{emoji} {nombre_tipo} — {nombre_tiempo}", rotar_180=rotar_180)
+        if img_hm:
+            elementos.append(img_hm)
+        else:
+            elementos.append(Paragraph("<i>(Sin coordenadas para renderizar el mapa)</i>", est_caption))
+        elementos.append(Spacer(1, 6))
+
+        # ── Layout para Finalizaciones (Tabla + Torta a 2 columnas) ──────────
+        if es_finalizaciones:
+            res_c = df_sub["resultado"].fillna("Sin especificar").value_counts().reset_index()
+            res_c.columns = ["Resultado", "Cant."]
+            total_r = res_c["Cant."].sum()
+            res_c["%"] = ((res_c["Cant."] / total_r) * 100).round(1).astype(str) + "%"
+            t_res = tabla_simple([["Resultado", "Cant.", "%"]] + res_c.values.tolist(), [105, 38, 38])
+
+            df_gol = df_sub[df_sub["resultado"].str.lower() == "gol"]
+            if not df_gol.empty:
+                g_c = df_gol["jugador"].replace("", "S/D").value_counts().reset_index()
+                g_c.columns = ["Dorsal", "Goles"]
+                if mapa_dorsal_nombre:
+                    g_c["Dorsal"] = g_c["Dorsal"].apply(
+                        lambda d: mapa_dorsal_nombre.get(str(d), f"#{d}")
+                    )
+                    g_c.rename(columns={"Dorsal": "Jugador"}, inplace=True)
+                    t_gol = tabla_simple([["Jugador", "Goles"]] + g_c.values.tolist(), [115, 35])
+                else:
+                    t_gol = tabla_simple([["Dorsal", "Goles"]] + g_c.values.tolist(), [90, 45])
+            else:
+                t_gol = Paragraph("Sin goles.", est_caption)
+
+            col1 = [Paragraph("Detalle de tiros:", est_caption), t_res,
+                    Spacer(1, 6), Paragraph("Goleadores:", est_caption), t_gol]
+
+            img_torta = torta_imagen(df_sub, "resultado",
+                                     mapa_colores=COLORES_RESULTADO_FINALIZACION,
+                                     ancho_pts=255, alto_pts=200)
+            col2 = ([Paragraph("Grafico de resultados:", est_caption), img_torta]
+                    if img_torta else [Paragraph("(Sin grafico)", est_caption)])
+
+            fila = Table([[col1, col2]], colWidths=[245, 270])
+            fila.setStyle(TableStyle([
+                ("VALIGN",      (0, 0), (-1, -1), "TOP"),
+                ("PADDING",     (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (1, 0), (1, 0), 14),
+            ]))
+            elementos.append(fila)
+            return
+
+        # ── Layout para Pérdidas / Recuperos / Faltas (Dividido en 2 Filas) ──
+        
+        # 1. Columna izquierda: Tabla de zona
+        if "zona" in df_sub.columns:
+            zona_c = df_sub["zona"].fillna("Sin especificar").value_counts().reset_index()
+            zona_c.columns = ["Zona", "Cant."]
+            total_z = zona_c["Cant."].sum()
+            zona_c["%"] = ((zona_c["Cant."] / total_z) * 100).round(1).astype(str) + "%"
+            t_zona = tabla_simple([["Zona", "Cant.", "%"]] + zona_c.values.tolist(), [110, 45, 45])
+        else:
+            t_zona = Paragraph("Sin datos de zona.", est_caption)
+
+        col1 = [Paragraph("Desglose por zona:", est_caption), t_zona]
+
+        # 2. Columna derecha: Torta de zona
+        img_torta = torta_imagen(df_sub, "zona",
+                                 color_seq=color_zona_seq or px.colors.qualitative.Set2,
+                                 ancho_pts=200, alto_pts=190)
+        col2 = ([Paragraph("Distribucion por zona:", est_caption), img_torta]
+                if img_torta else [Paragraph("(Sin grafico)", est_caption)])
+
+        # ✅ FILA SUPERIOR: Tabla + Torta
+        fila_superior = Table([[col1, col2]], colWidths=[200, 270])
+        fila_superior.setStyle(TableStyle([
+            ("VALIGN",      (0, 0), (-1, -1), "TOP"),
+            ("PADDING",     (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (1, 0), (1, 0), 10),
+        ]))
+        elementos.append(fila_superior)
+        elementos.append(Spacer(1, 6))
+
+        # 3. Fila inferior: Top 3 a ancho completo (500 pts)
+        img_top3 = barras_top3_imagen(df_sub, "jugador", color_barra=color_barra,
+                                      ancho_pts=500, alto_pts=115,
+                                      mapa_dorsal_nombre=mapa_dorsal_nombre)
+        col3 = ([Paragraph("Top 3 jugadores:", est_caption), img_top3]
+                if img_top3 else [Paragraph("Sin datos.", est_caption)])
+
+        # ✅ FILA INFERIOR: Top 3
+        fila_inferior = Table([[col3]], colWidths=[500])
+        fila_inferior.setStyle(TableStyle([
+            ("VALIGN",  (0, 0), (-1, -1), "TOP"),
+            ("PADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elementos.append(fila_inferior)
+
+    # ── DATOS BASE DEL PARTIDO ────────────────────────────────────────────────
+
+    df_partido_info = pd.read_sql(
+        "SELECT * FROM partidos WHERE fecha = ? AND rival = ?",
+        conn, params=(str(fecha_sel), rival_sel)
+    )
+    fila_p = df_partido_info.iloc[0] if not df_partido_info.empty else pd.Series(dtype=object)
+
+    def get(campo, default="—"):
+        try:
+            val = fila_p.get(campo, default)
+            return val if (pd.notna(val) and str(val).strip() not in ("", "nan")) else default
+        except Exception:
+            return default
+
+    competencia   = get("competencia", "—")
+    lugar         = get("lugar", "—")
+    equipo_propio = get("equipo_propio", "Equipo Propio")
+    lado_inicio_1t = get("lado_inicio_1t", "Derecha")
+
+    # Si en 1T atacaba hacia la Derecha, en 2T ataca hacia la Izquierda → hay que espejear el 2T
+    espejo_2t = "Izquierda" not in str(lado_inicio_1t)
+
+    # Posesión
+    try:
+        pos_1t_p = float(fila_p.get("posesion_1t_propio_seg") or 0)
+        pos_1t_r = float(fila_p.get("posesion_1t_rival_seg")  or 0)
+        pos_2t_p = float(fila_p.get("posesion_2t_propio_seg") or 0)
+        pos_2t_r = float(fila_p.get("posesion_2t_rival_seg")  or 0)
+        tiene_posesion = (pos_1t_p + pos_1t_r + pos_2t_p + pos_2t_r) > 0
+    except Exception:
+        pos_1t_p = pos_1t_r = pos_2t_p = pos_2t_r = 0.0
+        tiene_posesion = False
+
+    # Marcador: goles vienen de Finalizaciones (con resultado="Gol")
+    # y de Gol en Contra (tipo_evento propio que suma al equipo contrario)
+    TIPOS_CON_GOL = ["Finalizaciones"]
+    df_gm = df_ev[
+        df_ev["tipo_evento"].isin(TIPOS_CON_GOL) &
+        (df_ev["resultado"].str.lower() == "gol")
     ]
-    
-    t_header = Table(datos_header, colWidths=[250, 250])
+    # Goles en contra: tipo_evento = "Gol en Contra", suma al equipo contrario
+    df_gec = df_ev[df_ev["tipo_evento"] == "Gol en Contra"]
+    gp = (len(df_gm[df_gm["equipo"].str.lower() == "propio"]) +
+          len(df_gec[df_gec["equipo"].str.lower() == "rival"]))
+    gr = (len(df_gm[df_gm["equipo"].str.lower() == "rival"]) +
+          len(df_gec[df_gec["equipo"].str.lower() == "propio"]))
+
+    resultado_txt   = "Victoria" if gp > gr else ("Derrota" if gp < gr else "Empate")
+    color_resultado = "#2ecc71" if resultado_txt == "Victoria" else ("#e74c3c" if resultado_txt == "Derrota" else "#F59E0B")
+
+    # KPIs totales del equipo propio
+    df_p = df_ev[df_ev["equipo"].str.lower() == "propio"]
+    total_fin   = len(df_p[df_p["tipo_evento"] == "Finalizaciones"])
+    efectividad = f"{(gp / total_fin * 100):.0f}%" if total_fin > 0 else "—"
+    perdidas_p  = len(df_p[df_p["tipo_evento"] == "Perdidas"])
+    recuperos_p = len(df_p[df_p["tipo_evento"] == "Recuperos"])
+    faltas_p    = len(df_p[df_p["tipo_evento"] == "Faltas"])
+    abp_p       = len(df_p[df_p["tipo_evento"] == "ABP"])
+
+    # ── PÁGINA 1: PORTADA ────────────────────────────────────────────────────
+
+    LOGO_BLANCO_PATH = "imagenes/Logo_RGB_Fondo Blanco_FutsalIQ.jpg"
+
+    titulo_col = [
+        Paragraph("RESUMEN DE ESTADISTICAS DE JUEGO", est_titulo),
+        Paragraph("Presentacion para el cuerpo tecnico — FutsalIQ", est_subtitulo),
+    ]
+    if os.path.exists(LOGO_BLANCO_PATH):
+        try:
+            logo_rl = RLImage(LOGO_BLANCO_PATH, width=140, height=46)
+            logo_col = [logo_rl]
+        except Exception:
+            logo_col = [Paragraph("FutsalIQ", est_titulo)]
+    else:
+        logo_col = [Paragraph("FutsalIQ", est_titulo)]
+
+    t_header = Table([[titulo_col, logo_col]], colWidths=[350, 150])
     t_header.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F9FAFB')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#D1D5DB')),
-        ('PADDING', (0,0), (-1,-1), 6),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ("VALIGN",    (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN",     (1, 0), (1, 0),   "RIGHT"),
+        ("PADDING",   (0, 0), (-1, -1), 0),
+        ("LINEBELOW", (0, 0), (-1, 0),  2, COLOR_VERDE),
     ]))
     elementos.append(t_header)
     elementos.append(Spacer(1, 10))
+
+    # Metadata
+    meta_rows = [
+        [Paragraph("<b>Fecha</b>",        est_cuerpo), Paragraph(str(fecha_sel),  est_cuerpo),
+         Paragraph("<b>Competencia</b>",  est_cuerpo), Paragraph(competencia,     est_cuerpo)],
+        [Paragraph("<b>Rival</b>",        est_cuerpo), Paragraph(rival_sel,       est_cuerpo),
+         Paragraph("<b>Lugar / Sede</b>", est_cuerpo), Paragraph(lugar,           est_cuerpo)],
+        [Paragraph("<b>Plantel</b>",      est_cuerpo), Paragraph(equipo_propio,   est_cuerpo),
+         Paragraph("<b>Acciones reg.</b>",est_cuerpo), Paragraph(str(len(df_ev)), est_cuerpo)],
+    ]
+    t_meta = Table(meta_rows, colWidths=[80, 170, 90, 160])
+    t_meta.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), COLOR_GRIS),
+        ("BOX",        (0, 0), (-1, -1), 1, colors.HexColor("#D1D5DB")),
+        ("INNERGRID",  (0, 0), (-1, -1), 0.3, colors.HexColor("#E5E7EB")),
+        ("PADDING",    (0, 0), (-1, -1), 6),
+        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elementos.append(t_meta)
+    elementos.append(Spacer(1, 10))
+
+    # Marcador
+    est_eq = ParagraphStyle("Eq", fontSize=10, fontName="Helvetica-Bold",
+                            textColor=COLOR_OSCURO, alignment=1, leading=12, wordWrap="CJK")
     
-    # --- GRÁFICOS DINÁMICOS (MAPA DE CALOR Y BARRAS) ---
-    if lista_figuras:
-        for titulo_fig, fig in lista_figuras:
-            elementos.append(Paragraph(titulo_fig, estilo_sub))
-            try:
-                # 🛠️ CORRECCIÓN CLAVE: Forzamos fondo blanco, texto oscuro y margen izquierdo amplio para que no se corten las etiquetas
-                fig.update_layout(
-                    paper_bgcolor='white', 
-                    plot_bgcolor='white', 
-                    font=dict(color='#111827', size=11),
-                    width=700, 
-                    height=300, 
-                    margin=dict(t=20, b=20, l=120, r=30)  # Margen izquierdo más grande para el eje Y
-                )
-                img_bytes = pio.to_image(fig, format="png", scale=2)
-                img_io = io.BytesIO(img_bytes)
-                elementos.append(RLImage(img_io, width=480, height=205))
-            except Exception as e:
-                elementos.append(Paragraph(f"<i>(No se pudo renderizar el gráfico: {e})</i>", estilo_texto))
-            elementos.append(Spacer(1, 8))
+    # Agregamos leading=12 para la etiqueta del resultado
+    est_res_marc = ParagraphStyle("Res", fontSize=10, fontName="Helvetica-Bold",
+                                   textColor=colors.HexColor(color_resultado), alignment=1, leading=12)
+    
+    marc_data = [
+        [Paragraph(equipo_propio, est_eq),
+         Paragraph("vs", ParagraphStyle("vs", fontSize=9, fontName="Helvetica",
+                                        textColor=colors.HexColor("#9CA3AF"), alignment=1, leading=11)),
+         Paragraph(rival_sel, est_eq)],
+        
+        # ✅ Agregamos leading=32 a los números y leading=18 al guion para alinearlos
+        [Paragraph(str(gp), ParagraphStyle("GP", fontSize=32, fontName="Helvetica-Bold",
+                                            textColor=colors.HexColor("#2ecc71"), alignment=1, leading=32)),
+         Paragraph("-", ParagraphStyle("Gu", fontSize=18, fontName="Helvetica-Bold",
+                                       textColor=COLOR_OSCURO, alignment=1, leading=18)),
+         Paragraph(str(gr), ParagraphStyle("GR", fontSize=32, fontName="Helvetica-Bold",
+                                            textColor=colors.HexColor("#e74c3c"), alignment=1, leading=32))],
+        
+        [Paragraph("", est_eq), Paragraph(resultado_txt, est_res_marc), Paragraph("", est_eq)],
+    ]
+    
+    t_marc = Table(marc_data, colWidths=[195, 110, 195])
+    t_marc.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor("#F9FAFB")),
+        ("BOX",           (0, 0), (-1, -1), 2, colors.HexColor(color_resultado)),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, 0),  8),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
+        ("PADDING",       (0, 1), (-1, 1),  2), # ✅ Reduce padding en la fila de números/guion
+    ]))
+    elementos.append(t_marc)
+    elementos.append(Spacer(1, 10))
 
+    # Resumen ejecutivo
+    elementos.append(Paragraph("Resumen Ejecutivo", est_sub))
+    elementos.append(linea_verde())
+    resumen_lineas = [
+        f"El equipo ejecuto <b>{total_fin} finalizaciones</b> con una efectividad del <b>{efectividad}</b> ({gp} goles anotados).",
+        f"Se registraron <b>{perdidas_p} perdidas</b> y <b>{recuperos_p} recuperos</b> de Pelota.",
+        f"El equipo cometio <b>{faltas_p} faltas</b> y ejecuto <b>{abp_p} ABP</b>.",
+    ]
+    if tiene_posesion:
+        total_pp = pos_1t_p + pos_2t_p
+        total_rr = pos_1t_r + pos_2t_r
+        grand    = total_pp + total_rr
+        pct_p    = total_pp / grand * 100 if grand > 0 else 0
+        resumen_lineas.append(
+            f"Posesion total: <b>{pct_p:.1f}%</b> ({formatear_tiempo(total_pp)} vs {formatear_tiempo(total_rr)} del rival)."
+        )
+    for linea in resumen_lineas:
+        elementos.append(Paragraph(f"  {linea}", est_resumen))
+
+    elementos.append(Spacer(1, 8))
+
+    kpi_labels = ["Finalizaciones", "Goles", "Efectividad", "Perdidas", "Recuperos", "Faltas", "ABP"]
+    kpi_vals   = [str(total_fin), str(gp), efectividad, str(perdidas_p), str(recuperos_p), str(faltas_p), str(abp_p)]
+    t_kpi = Table([kpi_labels, kpi_vals], colWidths=[72] * 7)
+    t_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), COLOR_OSCURO),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), COLOR_VERDE),
+        ("TEXTCOLOR",  (0, 1), (-1, 1), colors.white),
+        ("FONTNAME",   (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 0), (-1, -1), 9),
+        ("ALIGN",      (0, 0), (-1, -1), "CENTER"),
+        ("PADDING",    (0, 0), (-1, -1), 7),
+        ("BOX",        (0, 0), (-1, -1), 1, colors.HexColor("#D1D5DB")),
+    ]))
+    elementos.append(t_kpi)
+
+    # Posesión (si hay datos)
+    if tiene_posesion:
+        elementos.append(Spacer(1, 10))
+        elementos.append(Paragraph("Posesion de Pelota", est_sub))
+        elementos.append(linea_verde())
+        total_pp = pos_1t_p + pos_2t_p
+        total_rr = pos_1t_r + pos_2t_r
+        grand    = total_pp + total_rr
+        pos_rows = [
+            ["", "1 Tiempo", "2 Tiempo", "Total", "%"],
+            [equipo_propio,
+             formatear_tiempo(pos_1t_p), formatear_tiempo(pos_2t_p),
+             formatear_tiempo(total_pp),
+             f"{total_pp/grand*100:.1f}%" if grand > 0 else "—"],
+            [rival_sel,
+             formatear_tiempo(pos_1t_r), formatear_tiempo(pos_2t_r),
+             formatear_tiempo(total_rr),
+             f"{total_rr/grand*100:.1f}%" if grand > 0 else "—"],
+        ]
+        elementos.append(tabla_simple(pos_rows, [140, 75, 75, 75, 60]))
+
+    # ── PÁGINA 2: DISTRIBUCIÓN DE VOLUMEN TÁCTICO ─────────────────────────────
     elementos.append(PageBreak())
+    elementos.append(Paragraph("DISTRIBUCION DE VOLUMEN TACTICO", est_seccion))
+    elementos.append(Paragraph(f"Todas las acciones del equipo propio — {equipo_propio}", est_caption))
+    elementos.append(linea_verde())
 
-    # --- RESUMEN GLOBAL DE ACCIONES ---
-    elementos.append(Paragraph("📊 Volumen de Acciones por Tipo", estilo_sub))
-    if not df_eventos_filtrados.empty:
-        resumen_eventos = df_eventos_filtrados["tipo_evento"].value_counts().reset_index()
-        resumen_eventos.columns = ["Tipo de Evento", "Cantidad"]
+    # Variables requeridas para esta página y las siguientes
+    df_propio_total = df_ev[df_ev["equipo"].str.lower() == "propio"].copy()
+    df_propio_1t    = df_propio_total[df_propio_total["tiempo"] == "1T"].copy()
+    df_propio_2t    = df_propio_total[df_propio_total["tiempo"] == "2T"].copy()
+
+    # Mapa dorsal → "Apellido Nombre" desde la tabla jugadores (activos)
+    # Usado en top3 y goleadores para mostrar nombres reales en lugar del número.
+    try:
+        df_jug_mapa = pd.read_sql(
+            "SELECT numero_camiseta, nombre, apellido FROM jugadores WHERE activo = 1",
+            conn
+        )
+        mapa_dorsal_nombre = {
+            str(int(r["numero_camiseta"])): f"{r['apellido']} {r['nombre']}"
+            for _, r in df_jug_mapa.iterrows()
+            if pd.notna(r["numero_camiseta"])
+        }
+    except Exception:
+        mapa_dorsal_nombre = {}
+
+    if not df_propio_total.empty:
+        # Tabla resumen
+        df_vol_resumen = df_propio_total.groupby(["tipo_evento", "tiempo"]).size().unstack(fill_value=0)
+        for col_t in ["1T", "2T"]:
+            if col_t not in df_vol_resumen.columns:
+                df_vol_resumen[col_t] = 0
+        df_vol_resumen["Total"] = df_vol_resumen["1T"] + df_vol_resumen["2T"]
+        df_vol_resumen = df_vol_resumen.sort_values(by="Total", ascending=False).reset_index()
         
-        data_ev = [["Tipo de Evento", "Cantidad"]] + [[str(row["Tipo de Evento"]), str(row["Cantidad"])] for _, row in resumen_eventos.iterrows()]
-        t_ev = Table(data_ev, colWidths=[300, 200])
-        t_ev.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F2937')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#F9FAFB')),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E5E7EB')),
-            ('PADDING', (0,0), (-1,-1), 5),
+        t_vol = tabla_simple(
+            [["Tipo de Evento", "Total", "1T", "2T"]] + df_vol_resumen[["tipo_evento", "Total", "1T", "2T"]].values.tolist(),
+            [180, 70, 70, 70]
+        )
+        elementos.append(t_vol)
+        elementos.append(Spacer(1, 15))
+
+        # Gráfico de Barras Horizontal
+        try:
+            fig_volumen = px.bar(
+                df_vol_resumen, y="tipo_evento", x="Total", orientation="h",
+                text="Total", color="tipo_evento",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            fig_volumen.update_traces(textposition="outside")
+            fig_volumen.update_layout(
+                margin=dict(l=110, r=30, t=10, b=30),  # ✅ l=110 para que no corte palabras largas
+                height=260,
+                width=490,
+                paper_bgcolor="white",
+                plot_bgcolor="white",
+                showlegend=False,
+                font=dict(color="#111827", size=9),
+                xaxis=dict(showgrid=True, gridcolor="#E5E7EB", title=None),
+                yaxis=dict(autorange="reversed", title=None)
+            )
+            img_bytes_v = pio.to_image(fig_volumen, format="png", scale=2)
+            elementos.append(RLImage(_io.BytesIO(img_bytes_v), width=490, height=260))
+        except Exception as e:
+            elementos.append(Paragraph(f"<i>(No se pudo generar el gráfico de barras: {e})</i>", est_caption))
+
+    # ── SECCIONES POR TIPO DE EVENTO (Total / 1T / 2T) ───────────────────────
+    # Orden del Word del analista: Finalizaciones → Perdidas → Recuperos → Faltas → ABP
+
+    config_tipos = [
+        # (tipo_evento, emoji, label, color_zona_seq, color_barra, es_finalizaciones)
+        ("Finalizaciones", "🎯", "FINALIZACIONES", px.colors.qualitative.Set1,   "#FF6B6B", True),
+        ("Perdidas",       "🔴", "PERDIDAS",       px.colors.qualitative.Set2,   "#FFD166", False),
+        ("Recuperos",      "🟢", "RECUPEROS",      px.colors.qualitative.Set3,   "#4ECDC4", False),
+        ("Faltas",         "🟨", "FALTAS",          px.colors.qualitative.Pastel1,"#F6E05E", False),
+    ]
+
+    for tipo_ev, emoji, label, color_zona_seq, color_barra, es_fin in config_tipos:
+        df_tot = df_propio_total[df_propio_total["tipo_evento"] == tipo_ev].copy()
+        df_1t  = df_propio_1t[df_propio_1t["tipo_evento"]   == tipo_ev].copy()
+        df_2t  = df_propio_2t[df_propio_2t["tipo_evento"]   == tipo_ev].copy()
+
+        if df_tot.empty:
+            continue
+
+        # TOTAL
+        pagina_evento(df_tot, emoji, label, f"TOTAL ({len(df_tot)} {label})",
+                      equipo_propio, espejado=False,
+                      es_finalizaciones=es_fin,
+                      color_zona_seq=color_zona_seq, color_barra=color_barra,
+                      mapa_dorsal_nombre=mapa_dorsal_nombre)
+
+        # PRIMER TIEMPO (sin espejo: en 1T el equipo ya ataca hacia la Derecha)
+        pagina_evento(df_1t, emoji, label, f"PRIMER TIEMPO ({len(df_1t)} {label})",
+                      equipo_propio, espejado=False,
+                      es_finalizaciones=es_fin,
+                      color_zona_seq=color_zona_seq, color_barra=color_barra,
+                      mapa_dorsal_nombre=mapa_dorsal_nombre)
+
+        # SEGUNDO TIEMPO (espejo si en 2T el equipo atacaba hacia la Izquierda)
+        pagina_evento(df_2t, emoji, label, f"SEGUNDO TIEMPO ({len(df_2t)} {label})",
+                      equipo_propio, espejado=espejo_2t,
+                      es_finalizaciones=es_fin,
+                      color_zona_seq=color_zona_seq, color_barra=color_barra,
+                      mapa_dorsal_nombre=mapa_dorsal_nombre)
+
+    # ── ABP: sin heatmap (no se marca posición en cancha) ────────────────────
+    # ── ABP: Consolidado en 1 sola página ─────────────────────────────────────
+    def _abp_tipo_series(df_abp_sub):
+        if "tipo_abp" in df_abp_sub.columns:
+            s = df_abp_sub["tipo_abp"].replace("", pd.NA)
+        else:
+            s = pd.Series(index=df_abp_sub.index, dtype=object)
+        if "resultado" in df_abp_sub.columns:
+            s = s.fillna(df_abp_sub["resultado"])
+        return s.fillna("Sin especificar")
+
+    def bloque_abp(df_abp_sub, nombre_tiempo):
+        """Genera una fila de 3 columnas (Tabla | Torta | Barras) para un tiempo específico."""
+        if df_abp_sub is None or df_abp_sub.empty:
+            return []
+
+        cantidad = len(df_abp_sub)
+        bloque = [
+            Paragraph(f"<b>{nombre_tiempo.upper()} ({cantidad} ABP)</b>", est_caption),
+            Spacer(1, 4)
+        ]
+
+        tipo_s = _abp_tipo_series(df_abp_sub)
+        tipo_c = tipo_s.value_counts().reset_index()
+        tipo_c.columns = ["Tipo de ABP", "Cant."]
+        total_abp = tipo_c["Cant."].sum()
+        tipo_c["%"] = ((tipo_c["Cant."] / total_abp) * 100).round(1).astype(str) + "%"
+
+        lado_c = df_abp_sub["zona"].fillna("Sin especificar").value_counts().reset_index() if "zona" in df_abp_sub.columns else pd.DataFrame({"Lado": [], "Cant.": []})
+        if not lado_c.empty and "zona" in df_abp_sub.columns:
+            lado_c.columns = ["Lado", "Cant."]
+        lado_total = lado_c["Cant."].sum() if not lado_c.empty else 0
+
+        # Col 1: Tabla simple
+        t_simple = tabla_simple([["Tipo de ABP", "Cant.", "%"]] + tipo_c.values.tolist(), [100, 30, 30])
+        col1 = [Paragraph("Desglose:", est_caption), t_simple]
+
+        # Col 2: Torta
+        try:
+            df_tipo_plot = tipo_c[["Tipo de ABP", "Cant."]].copy()
+            df_tipo_plot.columns = ["Tipo", "Cantidad"]
+            ancho_c, alto_c = 150, 110
+            fig_t = px.pie(df_tipo_plot, values="Cantidad", names="Tipo", hole=0.4,
+                           color_discrete_sequence=px.colors.qualitative.Pastel2)
+            fig_t.update_traces(textinfo="percent", textposition="inside", textfont=dict(size=7))
+            fig_t.update_layout(
+                showlegend=True,
+                legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center", font=dict(size=7, color="#111827")),
+                margin=dict(t=5, b=25, l=5, r=5),
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(color="#111827", size=7),
+                width=ancho_c * 1.5, height=alto_c * 1.5
+            )
+            img_t = RLImage(_io.BytesIO(pio.to_image(fig_t, format="png", scale=2)), width=ancho_c, height=alto_c)
+            col2 = [Paragraph("Gráfico tipo:", est_caption), img_t]
+        except Exception:
+            col2 = [Paragraph("(Sin gráfico)", est_caption)]
+
+        # Col 3: Barras Lado
+        try:
+            if not lado_c.empty and lado_total > 0:
+                df_lado_plot = lado_c[["Lado", "Cant."]].copy()
+                df_lado_plot.columns = ["Lado", "Cantidad"]
+                mapa_lado = {"Derecho": "#118AB2", "Izquierdo": "#F4A261", "Sin especificar": "#6B7280"}
+                ancho_b, alto_b = 130, 110
+                fig_b = px.bar(df_lado_plot, x="Lado", y="Cantidad", color="Lado",
+                               color_discrete_map=mapa_lado, text="Cantidad")
+                fig_b.update_traces(textposition="outside")
+                fig_b.update_layout(
+                    height=alto_b * 1.5, width=ancho_b * 1.5,
+                    margin=dict(t=10, b=20, l=10, r=10),
+                    showlegend=False, paper_bgcolor="white", plot_bgcolor="white",
+                    font=dict(color="#111827", size=8),
+                    xaxis_title=None, yaxis_title=None
+                )
+                img_b = RLImage(_io.BytesIO(pio.to_image(fig_b, format="png", scale=2)), width=ancho_b, height=alto_b)
+                col3 = [Paragraph("Distribución lado:", est_caption), img_b]
+            else:
+                col3 = [Paragraph("Sin datos de lado.", est_caption)]
+        except Exception:
+            col3 = [Paragraph("(Sin gráfico)", est_caption)]
+
+        fila = Table([[col1, col2, col3]], colWidths=[170, 160, 150])
+        fila.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("PADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (1, 0), (1, 0), 6),
+            ("LEFTPADDING", (2, 0), (2, 0), 6),
         ]))
-        elementos.append(t_ev)
+        bloque.append(fila)
+        bloque.append(Spacer(1, 10))
+        return bloque
 
-    elementos.append(Spacer(1, 15))
+    def pagina_abp_unica(df_abp_p, equipo_label):
+        """Genera 1 sola página con Total, 1T y 2T alineados verticalmente."""
+        if df_abp_p is None or df_abp_p.empty:
+            return
 
-    # --- DESGLOSE POR JUGADOR ---
-    elementos.append(Paragraph("📋 Rendimiento Individual por Jugador (Dorsal)", estilo_sub))
-    df_jugadores = df_eventos_filtrados[df_eventos_filtrados["jugador"] != ""].copy()
-    if not df_jugadores.empty:
-        tabla_indiv = df_jugadores.groupby(["jugador", "tipo_evento"]).size().unstack(fill_value=0).reset_index()
-        tabla_indiv.rename(columns={"jugador": "Dorsal"}, inplace=True)
-        
-        cols = list(tabla_indiv.columns)
-        data_ind = [cols] + [[str(val) for val in row] for _, row in tabla_indiv.iterrows()]
-        
-        ancho_col = 500 / max(len(cols), 1)
-        t_ind = Table(data_ind, colWidths=[ancho_col]*len(cols))
-        t_ind.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F2937')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('BACKGROUND', (0,1), (-1,-1), colors.white),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
-            ('PADDING', (0,0), (-1,-1), 4),
-        ]))
-        elementos.append(t_ind)
+        elementos.append(PageBreak())
+        elementos.append(Paragraph(f"🚩 ABP {equipo_label.upper()}", est_seccion))
+        elementos.append(Paragraph(f"Análisis General — Total, 1T y 2T", est_caption))
+        elementos.append(linea_verde())
+
+        # Agregar bloques verticalmente
+        elementos.extend(bloque_abp(df_abp_p, "TOTAL"))
+        elementos.extend(bloque_abp(df_abp_p[df_abp_p["tiempo"] == "1T"], "PRIMER TIEMPO"))
+        elementos.extend(bloque_abp(df_abp_p[df_abp_p["tiempo"] == "2T"], "SEGUNDO TIEMPO"))
+
+    # Llamada a la nueva página consolidada:
+    df_abp_p = df_propio_total[df_propio_total["tipo_evento"] == "ABP"].copy()
+    if not df_abp_p.empty:
+        pagina_abp_unica(df_abp_p, equipo_label=equipo_propio)
+
+    # ── FINALIZACIONES DEL RIVAL (Total + 1T + 2T) + ABP RIVAL (solo Total) ──
+    df_rival_ev = df_ev[df_ev["equipo"].str.lower() == "rival"]
+    df_fin_rival = df_rival_ev[df_rival_ev["tipo_evento"] == "Finalizaciones"].copy()
+
+    if not df_fin_rival.empty:
+        pagina_evento(df_fin_rival, "🔍", f"FINALIZACIONES {rival_sel.upper()}",
+                      f"TOTAL ({len(df_fin_rival)} FINALIZACIONES)",
+                      rival_sel, espejado=False,
+                      es_finalizaciones=True)
+        df_fin_rival_1t = df_fin_rival[df_fin_rival["tiempo"] == "1T"]
+        df_fin_rival_2t = df_fin_rival[df_fin_rival["tiempo"] == "2T"]
+        pagina_evento(df_fin_rival_1t, "🔍", f"FINALIZACIONES {rival_sel.upper()}",
+                      f"PRIMER TIEMPO ({len(df_fin_rival_1t)} FINALIZACIONES)",
+                      rival_sel, espejado=False,
+                      es_finalizaciones=True)
+        pagina_evento(df_fin_rival_2t, "🔍", f"FINALIZACIONES {rival_sel.upper()}",
+                      f"SEGUNDO TIEMPO ({len(df_fin_rival_2t)} FINALIZACIONES)",
+                      rival_sel, espejado=True,
+                      es_finalizaciones=True)
+
+    # ABP del rival — solo total (sin heatmap, mismo formato que propio)
+    df_abp_rival = df_rival_ev[df_rival_ev["tipo_evento"] == "ABP"].copy()
+    if not df_abp_rival.empty:
+        pagina_abp_unica(df_abp_rival, equipo_label=rival_sel)
+
+    # ── TABLA INDIVIDUAL POR DORSAL ───────────────────────────────────────────
+    elementos.append(PageBreak())
+    elementos.append(Paragraph("RENDIMIENTO INDIVIDUAL POR DORSAL", est_seccion))
+    elementos.append(linea_verde())
+
+    df_ind = df_propio_total[df_propio_total["jugador"].replace("", pd.NA).notna()].copy()
+    if not df_ind.empty:
+        tabla_piv = df_ind.groupby(["jugador", "tipo_evento"]).size().unstack(fill_value=0).reset_index()
+        tabla_piv.rename(columns={"jugador": "Dorsal"}, inplace=True)
+        tabla_piv = tabla_piv.sort_values("Dorsal", key=lambda x: pd.to_numeric(x, errors="coerce"))
+        cols = list(tabla_piv.columns)
+        ancho_dorsal = 45
+        ancho_resto  = min(58, int(455 / max(len(cols) - 1, 1)))
+        data_ind = [cols] + [[str(v) for v in row] for _, row in tabla_piv.iterrows()]
+        elementos.append(tabla_simple(data_ind, [ancho_dorsal] + [ancho_resto] * (len(cols) - 1)))
+
+        elementos.append(Spacer(1, 10))
+        elementos.append(Paragraph("Destacados del partido:", est_sub))
+        for col_dest, label_dest in [
+            ("Finalizaciones", "finalizaciones"), ("Recuperos", "recuperos"),
+            ("Faltas", "faltas"), ("Perdidas", "perdidas"),
+        ]:
+            if col_dest in tabla_piv.columns:
+                idx = tabla_piv[col_dest].idxmax()
+                top = tabla_piv.loc[idx]
+                # Solo muestra el destacado si la cantidad es mayor a cero
+                if top[col_dest] > 0:
+                    elementos.append(Paragraph(
+                        f"  Mayor cantidad de {label_dest}: <b>Dorsal {top['Dorsal']}</b> ({top[col_dest]})",
+                        est_resumen
+                    ))
     else:
-        elementos.append(Paragraph("No hay registros de jugadores para este filtro.", estilo_texto))
+        elementos.append(Paragraph("Sin datos individuales para este partido.", est_caption))
+
+    # ── PIE DE PÁGINA ─────────────────────────────────────────────────────────
+    elementos.append(Spacer(1, 14))
+    elementos.append(linea_verde())
+    elementos.append(Paragraph(
+        "Generado por FutsalIQ Analyzer  |  futsaliq@gmail.com  |  2964 53-8214  |  (c) 2026",
+        est_footer
+    ))
 
     doc.build(elementos)
     buffer.seek(0)
@@ -1072,6 +1793,27 @@ def crear_figura_cancha():
     fig.add_shape(type="rect", x0=-3, y0=25.5, x1=0, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
     fig.add_shape(type="rect", x0=100, y0=25.5, x1=103, y1=34.5, fillcolor="rgba(0,0,0,0)", line=dict(color="#9CA3AF", width=2))
 
+    # ── Puntos de referencia: Penal (6m → x=15/x=85) y Tiro 10 mtrs. (10m → x=25/x=75) ──
+    # Escala interna: 100 unidades = 40 metros reales → 1m = 2.5 unidades
+    # Penal: 6m del arco → x=15 (izq) y x=85 (der)
+    # 10 mtrs: 10m del arco → x=25 (izq) y x=75 (der)
+    fig.add_trace(go.Scatter(
+        x=[15, 85], y=[30, 30], mode="markers+text",
+        marker=dict(color="#FFFFFF", size=14, symbol="x", line=dict(color="#FF4B4B", width=3)),
+        text=["Penal", "Penal"], textposition="top center",
+        textfont=dict(color="#FFFFFF", size=11),
+        hovertemplate="Punto de Penal (6m)<extra></extra>",
+        showlegend=False, name="penal_ref"
+    ))
+    fig.add_trace(go.Scatter(
+        x=[25, 75], y=[30, 30], mode="markers+text",
+        marker=dict(color="#FFFFFF", size=12, symbol="diamond", line=dict(color="#FFD166", width=2)),
+        text=["10 m.", "10 m."], textposition="top center",
+        textfont=dict(color="#FFFFFF", size=10),
+        hovertemplate="Punto Tiro 10 mtrs.<extra></extra>",
+        showlegend=False, name="diez_ref"
+    ))
+
     fig.update_xaxes(range=[-5, 105], visible=False, fixedrange=True)
     fig.update_yaxes(range=[-3, 63], visible=False, fixedrange=True, scaleanchor="x")
 
@@ -1472,22 +2214,19 @@ def render_carga_datos(conn):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         tipo_evento = st.selectbox(
-            "Tipo de evento", 
-            ["Finalizaciones", "Recuperos", "Perdidas", "Tiro 10 mtrs.", "Penal", "Tiro Libre","Faltas", "ABP"],
+            "Tipo de evento",
+            ["Finalizaciones", "Recuperos", "Perdidas", "Faltas", "ABP", "Gol en Contra"],
             key="tipo_evento_rapido"
         )
     with col2:
         lista_dorsales = [str(i) for i in range(1, 100)]
-        # Recuperamos el resultado actual del session_state para saber si es GEC antes de que
-        # el selectbox de resultado exista (los widgets se renderizan en orden top-down).
-        # Usamos la clave interna de Streamlit para leerlo sin crear dependencia circular.
-        _resultado_actual = st.session_state.get("resultado_rapido", "")
-        _es_gec = (tipo_evento == "Finalizaciones" and _resultado_actual == "Gol en Contra")
-        _deshabilitar_jugador = (tipo_evento == "ABP") or _es_gec
+        # Gol en Contra siempre tiene jugador (el que lo metió en su propio arco)
+        # ABP no tiene jugador
+        _deshabilitar_jugador = (tipo_evento == "ABP")
         jugador = st.selectbox(
             "Número de jugador", lista_dorsales, key="jugador_rapido",
             disabled=_deshabilitar_jugador,
-            help="No aplica para ABP ni para Gol en Contra" if _deshabilitar_jugador else None
+            help="No aplica para ABP" if _deshabilitar_jugador else None
         )
     with col3:
         tiempo = st.selectbox("Tiempo", ["1T", "2T"], key="tiempo_rapido")
@@ -1496,19 +2235,36 @@ def render_carga_datos(conn):
 
     resultado, tipo_tarjeta_sel = "", ""
     tipo_abp_sel, lado_abp_sel, resultado_abp_sel = "", "", ""
+    tipo_finalizacion_sel = ""
 
     if tipo_evento == "Finalizaciones":
-        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado", "Gol en Contra"], key="resultado_rapido")
-        if resultado == "Gol en Contra":
-            st.info("⚠️ **Gol en Contra:** se registra sin número de jugador y suma al marcador del equipo contrario. El equipo seleccionado arriba es el que lo **sufrió**.")
-    elif tipo_evento == "Penal":
-        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado"], key="resultado_rapido")
-    elif tipo_evento == "Tiro Libre":
-        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido") 
-    elif tipo_evento == "Tiro 10 mtrs.":
-        resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")           
+        col_fin1, col_fin2 = st.columns(2)
+        with col_fin1:
+            tipo_finalizacion_sel = st.selectbox(
+                "Tipo de finalización",
+                ["Juego Dinámico", "Penal", "Tiro Libre", "Tiro 10 mtrs."],
+                key="tipo_finalizacion_rapido"
+            )
+        with col_fin2:
+            if tipo_finalizacion_sel == "Penal":
+                resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado"], key="resultado_rapido")
+            else:
+                resultado = st.selectbox("Resultado", ["Gol", "Atajado", "Desviado", "Bloqueado"], key="resultado_rapido")
+
+        if tipo_finalizacion_sel == "Penal":
+            st.info("🎯 **Penal:** hacé clic en el punto de penal del equipo atacante (marcado con ✕ en la cancha).")
+        elif tipo_finalizacion_sel == "Tiro 10 mtrs.":
+            st.info("🎯 **Tiro 10 mtrs.:** hacé clic en el punto de 10 metros (diamante ◆ en la cancha).")
+
+    elif tipo_evento == "Gol en Contra":
+        resultado = st.selectbox(
+            "Resultado", ["Gol en Contra"], key="resultado_rapido", disabled=True
+        )
+        st.info("⚠️ **Gol en Contra:** registrá el jugador que lo metió y la posición en la cancha. El equipo seleccionado es el que lo **sufrió** (suma al marcador del equipo contrario).")
+
     elif tipo_evento == "Faltas":
         tipo_tarjeta_sel = st.selectbox("Tarjeta asociada a la falta", ["Sin tarjeta", "Amarilla", "Roja"], key="tipo_tarjeta_falta")
+
     elif tipo_evento == "ABP":
         col_abp1, col_abp2, col_abp3 = st.columns(3)
         with col_abp1:
@@ -1591,15 +2347,21 @@ def render_carga_datos(conn):
                 if tipo_evento == "Faltas" and tipo_tarjeta_sel not in ("", "Sin tarjeta"):
                     tipo_tarjeta_final = resolver_tipo_tarjeta(conn, fecha, rival, equipo, jugador, tipo_tarjeta_sel)
 
-                jugador_a_guardar = "" if resultado == "Gol en Contra" else jugador
+                # Gol en Contra es ahora un tipo de evento propio (jugador + posición)
+                resultado_a_guardar = "Gol en Contra" if tipo_evento == "Gol en Contra" else resultado
+                tipo_evento_a_guardar = "Gol en Contra" if tipo_evento == "Gol en Contra" else tipo_evento
+
                 insertar_evento_individual(
-                    conn, fecha, rival, tipo_evento, tiempo, equipo,
-                    jugador_a_guardar, zona, resultado, tipo_tarjeta_final, x=x_guardar, y=y_guardar
+                    conn, fecha, rival, tipo_evento_a_guardar, tiempo, equipo,
+                    jugador, zona, resultado_a_guardar, tipo_tarjeta_final,
+                    x=x_guardar, y=y_guardar,
+                    tipo_finalizacion=tipo_finalizacion_sel if tipo_evento == "Finalizaciones" else ""
                 )
 
                 st.session_state["click_cancha_seq"] += 1
                 mensaje_extra = f" | Tarjeta: {tipo_tarjeta_final}" if tipo_tarjeta_final else ""
-                st.success(f"✅ ¡Registrado! {tipo_evento} ({zona}) - Jugador {jugador}{mensaje_extra}. Guardado de manera normalizada.")
+                tipo_fin_msg = f" ({tipo_finalizacion_sel})" if tipo_finalizacion_sel and tipo_evento == "Finalizaciones" else ""
+                st.success(f"✅ ¡Registrado! {tipo_evento_a_guardar}{tipo_fin_msg} ({zona}) - Jugador {jugador}{mensaje_extra}.")
                 st.rerun()
         else:
             st.caption("📍 Esperando clic posicional...")
@@ -1698,7 +2460,22 @@ def render_dashboard_general(conn):
         tiempos_disponibles = ["Todos"] + sorted(list(df_eventos["tiempo"].dropna().unique()))
         tiempo_sel = st.selectbox("Filtrar por Tiempo de Juego", tiempos_disponibles)
 
-    # Definimos la variable jugador_sel fija en "Todos" para que los gráficos y filtros cruzados no den error
+    # Selector de tipo_finalizacion: aparece solo cuando se filtra por Finalizaciones
+    tipo_finalizacion_sel_dash = "Todos"
+    if tipo_sel == "Finalizaciones" and "tipo_finalizacion" in df_eventos.columns:
+        subtipos_disponibles = ["Todos"] + sorted(
+            [v for v in df_eventos.loc[
+                df_eventos["tipo_evento"] == "Finalizaciones", "tipo_finalizacion"
+            ].dropna().unique() if v != ""]
+        )
+        if len(subtipos_disponibles) > 1:
+            tipo_finalizacion_sel_dash = st.selectbox(
+                "Filtrar por Tipo de Finalización",
+                subtipos_disponibles,
+                key="dash_tipo_finalizacion_sel"
+            )
+
+    # Definimos la variable jugador_sel fija en "Todos"
     jugador_sel = "Todos"
 
     # Filtros cruzados
@@ -1709,10 +2486,12 @@ def render_dashboard_general(conn):
         df_filtrado = df_filtrado[df_filtrado["jugador"] == jugador_sel]
     if tipo_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["tipo_evento"] == tipo_sel]
+    if tipo_finalizacion_sel_dash != "Todos" and tipo_sel == "Finalizaciones":
+        df_filtrado = df_filtrado[df_filtrado["tipo_finalizacion"].fillna("") == tipo_finalizacion_sel_dash]
     if equipo_sel != "Todos":
-       df_filtrado = df_filtrado[df_filtrado["equipo"] == equipo_sel]
+        df_filtrado = df_filtrado[df_filtrado["equipo"] == equipo_sel]
     if tiempo_sel != "Todos":
-       df_filtrado = df_filtrado[df_filtrado["tiempo"] == tiempo_sel]   
+        df_filtrado = df_filtrado[df_filtrado["tiempo"] == tiempo_sel]
 
     # =========================================================
     # 1. SECCIÓN DE RESULTADO DEL PARTIDO (ARRIBA)
@@ -1739,28 +2518,23 @@ def render_dashboard_general(conn):
     if partido_sel != "Todos":
         df_para_marcador = df_para_marcador[df_para_marcador["partido"] == partido_sel]
 
-    # Goles = cualquier resultado que contenga "gol" en Finalizaciones, Tiro Libre, Penal, Tiro 10 mtrs.
-    # Los "Gol en Contra" se registran con equipo=Propio/Rival (el que lo sufrió) y resultado="Gol en Contra":
-    # suman al marcador del equipo CONTRARIO al equipo registrado.
-    TIPOS_CON_GOL = ["Finalizaciones", "Tiro Libre", "Penal", "Tiro 10 mtrs."]
+    # Goles: vienen de Finalizaciones con resultado="Gol"
+    # Gol en Contra: tipo_evento propio, suma al equipo contrario al registrado
+    TIPOS_CON_GOL = ["Finalizaciones"]
     df_goles_marcador = df_para_marcador[
-        df_para_marcador["tipo_evento"].isin(TIPOS_CON_GOL) &
-        df_para_marcador["resultado"].str.lower().str.contains("gol", na=False)
-    ]
-
-    # Gol en contra: el que lo sufre es el equipo registrado, pero el gol le suma al rival
-    mask_gc = df_goles_marcador["resultado"].str.lower() == "gol en contra"
-    goles_propio_normales = len(df_goles_marcador[~mask_gc & (df_goles_marcador["equipo"].str.lower() == "propio")])
-    goles_rival_normales  = len(df_goles_marcador[~mask_gc & (df_goles_marcador["equipo"].str.lower() == "rival")])
-    # GEC sufrido por Propio → suma al rival; GEC sufrido por Rival → suma al propio
-    gec_propio_sufre = len(df_goles_marcador[mask_gc & (df_goles_marcador["equipo"].str.lower() == "propio")])
-    gec_rival_sufre  = len(df_goles_marcador[mask_gc & (df_goles_marcador["equipo"].str.lower() == "rival")])
-
-    # Base de eventos de gol para la tabla de autores: NO incluye goles en contra (no tienen dorsal)
-    eventos_gol_base = df_para_marcador[
         df_para_marcador["tipo_evento"].isin(TIPOS_CON_GOL) &
         (df_para_marcador["resultado"].str.lower() == "gol")
     ]
+    df_gec_marcador = df_para_marcador[df_para_marcador["tipo_evento"] == "Gol en Contra"]
+
+    goles_propio_normales = len(df_goles_marcador[df_goles_marcador["equipo"].str.lower() == "propio"])
+    goles_rival_normales  = len(df_goles_marcador[df_goles_marcador["equipo"].str.lower() == "rival"])
+    # GEC sufrido por Propio → suma al rival; GEC sufrido por Rival → suma al propio
+    gec_propio_sufre = len(df_gec_marcador[df_gec_marcador["equipo"].str.lower() == "propio"])
+    gec_rival_sufre  = len(df_gec_marcador[df_gec_marcador["equipo"].str.lower() == "rival"])
+
+    # Base de goles para tabla de autores (solo Finalizaciones con Gol)
+    eventos_gol_base = df_goles_marcador.copy()
 
     # Creamos las dos columnas principales de la sección
     # Columna izquierda (Ancho 1.2): Selector de tiempo y tarjeta de marcador
@@ -1798,14 +2572,20 @@ def render_dashboard_general(conn):
         eventos_gol = eventos_gol_base
         label_marcador = "MARCADOR FINAL"
 
-    # Calcular goles con lógica de GEC
-    mask_gc_t = df_goles_t["resultado"].str.lower() == "gol en contra"
-    gp_norm = len(df_goles_t[~mask_gc_t & (df_goles_t["equipo"].str.lower() == "propio")])
-    gr_norm = len(df_goles_t[~mask_gc_t & (df_goles_t["equipo"].str.lower() == "rival")])
-    gec_ps = len(df_goles_t[mask_gc_t & (df_goles_t["equipo"].str.lower() == "propio")])  # GEC sufrido por Propio
-    gec_rs = len(df_goles_t[mask_gc_t & (df_goles_t["equipo"].str.lower() == "rival")])   # GEC sufrido por Rival
-    goles_propio = gp_norm + gec_rs   # goles propios normales + GEC del rival (que nos beneficia)
-    goles_rival  = gr_norm + gec_ps   # goles rivales normales + GEC nuestro (que los beneficia)
+    # Calcular goles por tiempo con nueva lógica
+    # df_goles_t ya contiene solo Finalizaciones con resultado="Gol" filtradas por tiempo
+    df_gec_t = df_gec_marcador.copy()
+    if "1T" in modo_tiempo:
+        df_gec_t = df_gec_t[df_gec_t["tiempo"] == "1T"]
+    elif "2T" in modo_tiempo:
+        df_gec_t = df_gec_t[df_gec_t["tiempo"] == "2T"]
+
+    gp_norm = len(df_goles_t[df_goles_t["equipo"].str.lower() == "propio"])
+    gr_norm = len(df_goles_t[df_goles_t["equipo"].str.lower() == "rival"])
+    gec_ps = len(df_gec_t[df_gec_t["equipo"].str.lower() == "propio"])   # GEC sufrido por Propio → suma al rival
+    gec_rs = len(df_gec_t[df_gec_t["equipo"].str.lower() == "rival"])    # GEC sufrido por Rival → suma al propio
+    goles_propio = gp_norm + gec_rs
+    goles_rival  = gr_norm + gec_ps
 
     # Volvemos a usar las dos columnas para ubicar el marcador abajo del selector y la tabla abajo del título
     col_izq_res_tarjeta, col_der_gol_tabla = st.columns([1.2, 1.8], gap="medium")
@@ -2218,25 +2998,37 @@ def render_dashboard_general(conn):
     with col_pdf2:
         if not REPORTLAB_DISPONIBLE:
             st.warning("⚠️ Módulo PDF en preparación.")
-        elif partido_sel != "Todos" and " - " in partido_sel:
-            fecha_actual, rival_actual = partido_sel.split(" - ", 1)
+        elif partido_sel and partido_sel != "Todos":
+            partido_str = str(partido_sel)
             
-            figuras_a_exportar = [
-                (titulo, fig) for titulo, fig in [
-                    ("📍 Mapa de Calor Táctico", fig_heatmap_general),
-                    ("📊 Distribución de Volumen Táctico", fig_barras_tipo),
-                ] if fig is not None
-            ]
+            # Buscamos cualquier separador común entre fecha y rival
+            separador = None
+            for sep in [" - ", " – ", " — ", " vs ", " vs. ", "-"]:
+                if sep in partido_str:
+                    separador = sep
+                    break
             
-            pdf_buffer = generar_pdf_partido_avanzado(conn, fecha_actual, rival_actual, df_filtrado, lista_figuras=figuras_a_exportar)
-            
-            st.download_button(
-                label="📥 Descargar PDF Pro",
-                data=pdf_buffer,
-                file_name=f"Reporte_Tactico_{rival_actual}_{fecha_actual}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            if separador:
+                partes = partido_str.split(separador, 1)
+                fecha_actual = partes[0].strip()
+                rival_actual = partes[1].strip()
+                
+                try:
+                    # El PDF siempre recarga los datos completos del partido desde la DB
+                    pdf_buffer = generar_pdf_partido_avanzado(conn, fecha_actual, rival_actual)
+                    
+                    st.download_button(
+                        label="📥 Descargar PDF Pro",
+                        data=pdf_buffer,
+                        file_name=f"Reporte_Tactico_{rival_actual}_{fecha_actual}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"btn_pdf_descarga_{fecha_actual}_{rival_actual}"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error al generar el PDF: {e}")
+            else:
+                st.warning("⚠️ No se pudo separar la fecha del rival en el partido seleccionado.")
         else:
             st.info("💡 Seleccioná un partido específico en el filtro superior para habilitar la descarga.")
 
@@ -2503,8 +3295,7 @@ def render_jugadores(conn, rol_actual):
                         key="btn_exportar_plantel_excel"
                     )
             
-            df_filtrado = df_plantel.copy()
-            
+          
             df_filtrado = df_plantel.copy()
             if busqueda:
                 mask = (
@@ -2669,7 +3460,7 @@ def render_jugadores(conn, rol_actual):
             # porque si no, un jugador inactivo queda invisible en toda la app y su DNI
             # (que es único) se queda "trabado" sin forma de liberarlo ni reactivarlo.
             df_jug_edit = cargar_jugadores_df(conn, solo_activos=False)
-            if df_jug_edit is None:
+            if df_jug_edit is None or df_jug_edit.empty:
                 st.info("No hay jugadores para editar.")
             else:
                 opciones = {
@@ -2710,7 +3501,8 @@ def render_jugadores(conn, rol_actual):
                         telefono = st.text_input("Teléfono", value=jug["telefono"] or "")
                         direccion = st.text_input("Dirección", value=jug["direccion"] or "")
                     with c5:
-                        grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, index=GRUPOS_SANGUINEOS.index(jug["grupo_sanguineo"]) if jug["grupo_sanguineo"] in GRUPOS_SANGUINEOS else 8, key=f"edit_gs_{jugador_id}")
+                        idx_gs = GRUPOS_SANGUINEOS.index(jug["grupo_sanguineo"]) if jug["grupo_sanguineo"] in GRUPOS_SANGUINEOS else GRUPOS_SANGUINEOS.index("Desconocido")
+                        grupo_sanguineo = st.selectbox("Grupo sanguíneo", GRUPOS_SANGUINEOS, index=idx_gs, key=f"edit_gs_{jugador_id}")
                         obra_social = st.text_input("Obra social", value=jug["obra_social"] or "")
                     with c6:
                         contacto_emerg_nombre = st.text_input("Contacto de emergencia", value=jug["contacto_emergencia_nombre"] or "")
@@ -2721,10 +3513,10 @@ def render_jugadores(conn, rol_actual):
 
                     col_upd, col_baja = st.columns(2)
                     with col_upd:
-                        actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True, key="btn_guardar_cambios_jugador")
+                        actualizar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True, key=f"btn_guardar_cambios_{jugador_id}")
                     with col_baja:
                         confirmar_baja = st.checkbox("Confirmo la baja de este jugador", key=f"edit_baja_chk_{jugador_id}")
-                        dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True)
+                        dar_baja = st.form_submit_button("🗑️ Dar de baja", use_container_width=True, key=f"btn_dar_baja_{jugador_id}")
 
                     if actualizar:
                         duplicado_edit = buscar_jugador_por_dni(conn, dni, excluir_id=jugador_id)
@@ -2733,7 +3525,7 @@ def render_jugadores(conn, rol_actual):
                             st.error(f"❌ Ese DNI ya pertenece a otro jugador ({estado_dup}): {duplicado_edit['apellido']}, {duplicado_edit['nombre']}.")
                         else:
                             # Al subir la nueva foto, automáticamente aplicará el recorte cuadrado de 320x320 píxeles que definimos antes
-                            foto_path = guardar_foto_jugador(nueva_foto, dni) if nueva_foto else None
+                            foto_path = guardar_foto_jugador(nueva_foto, dni) if nueva_foto else jug["foto_path"]
                             actualizar_jugador(conn, jugador_id, {
                                 "nombre": nombre, "apellido": apellido, "dni": dni, "comet": comet,
                                 "fecha_nacimiento": str(fecha_nac), "numero_camiseta": numero_camiseta,
@@ -2819,8 +3611,8 @@ def renderizar_footer():
             <a href="https://wa.me/5492964538214" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
                 {icono_whatsapp} 2964 53-8214
             </a>
-            <a href="https://instagram.com/futsaliq" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
-                {icono_instagram} futsaliq
+            <a href="https://instagram.com/futsaliq.tdf" target="_blank" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                {icono_instagram} futsaliq.tdf
             </a>
             <a href="mailto:futsaliq@gmail.com" style="color:#9CA3AF; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
                 {icono_email} futsaliq@gmail.com
@@ -2894,34 +3686,15 @@ def main():
         with tab4:
             render_jugadores(conn, rol_actual)
             
-    elif rol_actual == "Lector":
-        # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
+    elif rol_actual in ["Lector", "Entrenador"]:   # Acceso limitado: Ocultamos pestaña de carga de datos para proteger la integridad de la DB
         renderizar_banner_topo()
-        renderizar_header("Futsal IQ Analyzer - Panel Lector")
+        renderizar_header(f"Futsal IQ Analyzer - Panel {rol_actual}")
         tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
         
-        with tab2:
-            render_dashboard_general(conn)
-        with tab3:
-            render_rendimiento_individual(conn)
-        with tab4:
-            render_jugadores(conn, rol_actual)        
+        with tab2: render_dashboard_general(conn)
+        with tab3: render_rendimiento_individual(conn)
+        with tab4: render_jugadores(conn, rol_actual)        
             
-    elif rol_actual == "Entrenador":
-        # Mismo alcance que "Lector" hoy: Dashboard, Rendimiento Individual y Plantel
-        # (el plantel queda en solo lectura porque render_jugadores ya gatea la edición
-        # con rol_actual == "Administrador").
-        renderizar_banner_topo()
-        renderizar_header("Futsal IQ Analyzer - Panel Entrenador")
-        tab2, tab3, tab4 = st.tabs(["Dashboard General", "Rendimiento Individual", "Plantel de Jugadores"])
-
-        with tab2:
-            render_dashboard_general(conn)
-        with tab3:
-            render_rendimiento_individual(conn)
-        with tab4:
-            render_jugadores(conn, rol_actual)
-
     elif rol_actual == "Jugador":
         # Acceso más acotado: solo Dashboard General y Rendimiento Individual, sin Plantel.
         renderizar_banner_topo()
