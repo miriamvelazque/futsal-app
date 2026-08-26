@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -682,9 +682,8 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
     # ── Cabecera de sección de evento (título + subtítulo de tiempo + línea) ──
     def header_seccion(emoji, nombre_tipo, nombre_tiempo, cantidad, equipo_label):
-        """Cabecera estilizada: 'FINALIZACIONES RIO GRANDE — PRIMER TIEMPO (20 FINALIZACIONES)'"""
-        titulo_txt = f"{emoji} {nombre_tipo.upper()} {equipo_label.upper()}"
-        sub_txt    = f"{nombre_tiempo.upper()} ({cantidad} {nombre_tipo.upper()})"
+        titulo_txt = f"{emoji} {nombre_tipo.upper()} — {equipo_label.upper()}"
+        sub_txt    = f"{nombre_tiempo.upper()}  ·  {cantidad} acciones"
         elementos.append(Paragraph(titulo_txt, est_seccion))
         elementos.append(Paragraph(sub_txt,    est_caption))
         elementos.append(linea_verde())
@@ -744,17 +743,65 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
             img_torta = torta_imagen(df_sub, "resultado",
                                      mapa_colores=COLORES_RESULTADO_FINALIZACION,
-                                     ancho_pts=255, alto_pts=200)
-            col2 = ([Paragraph("Grafico de resultados:", est_caption), img_torta]
+                                     ancho_pts=190, alto_pts=165)
+            col2 = ([Paragraph("Resultados:", est_caption), img_torta]
                     if img_torta else [Paragraph("(Sin grafico)", est_caption)])
 
-            fila = Table([[col1, col2]], colWidths=[245, 270])
-            fila.setStyle(TableStyle([
+                        # ── Fila superior: Tabla+Goleadores | Torta resultado ─────────────
+            fila_sup = Table([[col1, col2]], colWidths=[245, 259])
+            fila_sup.setStyle(TableStyle([
                 ("VALIGN",      (0, 0), (-1, -1), "TOP"),
                 ("PADDING",     (0, 0), (-1, -1), 0),
                 ("LEFTPADDING", (1, 0), (1, 0), 14),
             ]))
-            elementos.append(fila)
+            elementos.append(fila_sup)
+            elementos.append(Spacer(1, 6))
+
+            # ── Fila inferior: barras horizontales por tipo (ancho completo) ──
+            if "tipo_finalizacion" in df_sub.columns:
+                tf_counts = (df_sub["tipo_finalizacion"]
+                             .replace("", pd.NA).dropna()
+                             .value_counts().reset_index())
+                tf_counts.columns = ["Tipo", "Cantidad"]
+                if not tf_counts.empty:
+                    PALETA_TF = {
+                        "Juego Dinámico": "#4158f6",
+                        "Penal":          "#FF4B4B",
+                        "Tiro Libre":     "#F4A261",
+                        "Tiro 10 mtrs.":  "#A78BFA",
+                    }
+                    try:
+                        tf_sorted = tf_counts.sort_values("Cantidad", ascending=True)
+                        fig_tf = px.bar(
+                            tf_sorted, x="Cantidad", y="Tipo", orientation="h",
+                            text="Cantidad",
+                            color="Tipo",
+                            color_discrete_map={t: PALETA_TF.get(t, "#9CA3AF")
+                                                for t in tf_sorted["Tipo"]}
+                        )
+                        fig_tf.update_traces(
+                            textposition="outside",
+                            textfont=dict(size=10, color="#111827"),
+                            marker=dict(line=dict(width=0)),
+                        )
+                        fig_tf.update_layout(
+                            height=160, width=680,
+                            margin=dict(t=6, b=6, l=110, r=50),
+                            showlegend=False,
+                            paper_bgcolor="white", plot_bgcolor="white",
+                            font=dict(color="#111827", size=9),
+                            xaxis=dict(showgrid=False, showticklabels=False,
+                                       zeroline=False, title=None),
+                            yaxis=dict(title=None, tickfont=dict(size=9)),
+                        )
+                        img_tf = RLImage(
+                            _io.BytesIO(pio.to_image(fig_tf, format="png", scale=2)),
+                            width=470, height=110
+                        )
+                        elementos.append(Paragraph("<b>Finalizaciones por tipo:</b>", est_caption))
+                        elementos.append(img_tf)
+                    except Exception:
+                        pass
             return
 
         # ── Layout para Pérdidas / Recuperos / Faltas (Dividido en 2 Filas) ──
@@ -885,64 +932,66 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     elementos.append(t_meta)
     elementos.append(Spacer(1, 10))
 
-#    Marcador final (equipo propio vs rival)
-# ── OBTENCIÓN DE GOLEADORES POR EQUIPO ────────────────────────────────────
-    def obtener_goleadores(df_goles, df_en_contra, mapa_dorsales):
+# ── VERIFICACIÓN Y CARGA SEGURA DE MAPA DE DORSALES ───────────────────────
+    if 'mapa_dorsal_nombre' not in locals():
+        try:
+            df_jug_mapa = pd.read_sql(
+                "SELECT numero_camiseta, nombre, apellido FROM jugadores WHERE activo = 1",
+                conn
+            )
+            mapa_dorsal_nombre = {
+                str(int(r["numero_camiseta"])): f"{r['apellido']} {r['nombre']}"
+                for _, r in df_jug_mapa.iterrows() if pd.notna(r["numero_camiseta"])
+            }
+        except Exception:
+            mapa_dorsal_nombre = {}
+
+    # ── EXTRAER GOLEADORES CON FORMATO "⚽ Nombre (Goles)" ───────────────────
+    def obtener_goleadores(df_goles, df_en_contra, es_equipo_propio):
         lineas = []
-        # Goles a favor
         if not df_goles.empty and "jugador" in df_goles.columns:
             conteo = df_goles["jugador"].dropna().astype(str).value_counts()
             for dors, cant in conteo.items():
                 dors_clean = str(dors).split(".")[0].strip()
-                nombre = mapa_dorsales.get(dors_clean, f"Jugador {dors_clean}")
+                nombre = (
+                    mapa_dorsal_nombre.get(dors_clean, f"Jugador {dors_clean}")
+                    if es_equipo_propio
+                    else f"Jugador {dors_clean}"
+                )
                 lbl_cant = f" ({cant})" if cant > 1 else ""
                 lineas.append(f"⚽ {nombre}{lbl_cant}")
 
-        # Goles en contra a favor
-        if not df_en_contra.empty:
+        if not df_en_contra.empty and "jugador" in df_en_contra.columns:
             for _, r in df_en_contra.iterrows():
                 dors = str(r.get("jugador", "")).split(".")[0].strip()
-                nombre = mapa_dorsales.get(dors, f"Jugador {dors}") if dors else "Rival"
+                nombre = (
+                    f"Jugador {dors}"
+                    if es_equipo_propio
+                    else mapa_dorsal_nombre.get(dors, f"Jugador {dors}")
+                ) if dors else "Rival"
                 lineas.append(f"⚽ {nombre} (Gol en contra)")
-
         return lineas
 
-    df_gm_p = df_gm[df_gm["equipo"].str.lower() == "propio"]
-    df_gec_r = df_gec[df_gec["equipo"].str.lower() == "rival"]
-    goleadores_propio = obtener_goleadores(df_gm_p, df_gec_r, mapa_dorsal_nombre)
+    df_gm_p = df_gm[df_gm["equipo"].str.lower() == "propio"] if not df_gm.empty else pd.DataFrame()
+    df_gec_r = df_gec[df_gec["equipo"].str.lower() == "rival"] if not df_gec.empty else pd.DataFrame()
+    goleadores_propio = obtener_goleadores(df_gm_p, df_gec_r, es_equipo_propio=True)
 
-    df_gm_r = df_gm[df_gm["equipo"].str.lower() == "rival"]
-    df_gec_p = df_gec[df_gec["equipo"].str.lower() == "propio"]
-    goleadores_rival = obtener_goleadores(df_gm_r, df_gec_p, mapa_dorsal_nombre)
+    df_gm_r = df_gm[df_gm["equipo"].str.lower() == "rival"] if not df_gm.empty else pd.DataFrame()
+    df_gec_p = df_gec[df_gec["equipo"].str.lower() == "propio"] if not df_gec.empty else pd.DataFrame()
+    goleadores_rival = obtener_goleadores(df_gm_r, df_gec_p, es_equipo_propio=False)
 
     txt_gol_p = "<br/>".join(goleadores_propio) if goleadores_propio else "—"
     txt_gol_r = "<br/>".join(goleadores_rival) if goleadores_rival else "—"
 
-    # ── ESTILOS DEL MARCADOR FINAL ───────────────────────────────────────────
-    est_mf_titulo = ParagraphStyle("MFTitulo", fontSize=8, fontName="Helvetica-Bold",
-                                   textColor=colors.HexColor("#6B7280"), alignment=1, leading=10)
-    est_eq_nombre = ParagraphStyle("EqNombre", fontSize=11, fontName="Helvetica-Bold",
-                                   textColor=COLOR_OSCURO, alignment=0, leading=13)
-    est_gol_lista = ParagraphStyle("GolLista", fontSize=8, fontName="Helvetica",
-                                   textColor=colors.HexColor("#374151"), alignment=0, leading=12)
-    est_res_marc  = ParagraphStyle("ResMarc", fontSize=9, fontName="Helvetica-Bold",
-                                   textColor=colors.HexColor(color_resultado), alignment=1, leading=11)
+    # ── ESTILOS Y TABLA DEL MARCADOR ──────────────────────────────────────────
+    est_mf_titulo = ParagraphStyle("MFTitulo", fontSize=8, fontName="Helvetica-Bold", textColor=colors.HexColor("#6B7280"), alignment=1, leading=10)
+    est_eq_nombre = ParagraphStyle("EqNombre", fontSize=11, fontName="Helvetica-Bold", textColor=COLOR_OSCURO, alignment=0, leading=13)
+    est_gol_lista = ParagraphStyle("GolLista", fontSize=8, fontName="Helvetica", textColor=colors.HexColor("#374151"), alignment=0, leading=12)
+    est_res_marc  = ParagraphStyle("ResMarc", fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor(color_resultado), alignment=1, leading=11)
 
-    # Columna Izquierda (Equipo Propio)
-    col_propio = [
-        Paragraph(equipo_propio.upper(), est_eq_nombre),
-        Spacer(1, 4),
-        Paragraph(txt_gol_p, est_gol_lista)
-    ]
+    col_propio = [Paragraph(equipo_propio.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_p, est_gol_lista)]
+    col_rival  = [Paragraph(rival_sel.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_r, est_gol_lista)]
 
-    # Columna Derecha (Rival)
-    col_rival = [
-        Paragraph(rival_sel.upper(), est_eq_nombre),
-        Spacer(1, 4),
-        Paragraph(txt_gol_r, est_gol_lista)
-    ]
-
-    # Columna Centro (Resultado)
     sub_marc = Table([
         [Paragraph(str(gp), ParagraphStyle("GP", fontSize=28, fontName="Helvetica-Bold", textColor=colors.HexColor("#2ecc71"), alignment=1, leading=28)),
          Paragraph("-", ParagraphStyle("Gu", fontSize=16, fontName="Helvetica-Bold", textColor=COLOR_OSCURO, alignment=1, leading=16)),
@@ -950,15 +999,8 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     ], colWidths=[35, 15, 35])
     sub_marc.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
 
-    col_centro = [
-        Paragraph("MARCADOR FINAL", est_mf_titulo),
-        Spacer(1, 4),
-        sub_marc,
-        Spacer(1, 4),
-        Paragraph(resultado_txt, est_res_marc)
-    ]
+    col_centro = [Paragraph("MARCADOR FINAL", est_mf_titulo), Spacer(1, 4), sub_marc, Spacer(1, 4), Paragraph(resultado_txt, est_res_marc)]
 
-    # Construcción de la Tabla Principal del Marcador
     t_marc = Table([[col_propio, col_centro, col_rival]], colWidths=[180, 140, 180])
     t_marc.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor("#F9FAFB")),
@@ -993,10 +1035,69 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         elementos.append(Paragraph(f"  {linea}", est_resumen))
 
     elementos.append(Spacer(1, 8))
-
+#  -------------funciones auxiliares - configuracion de estilos y tablas para el reporte PDF----------------
+    # ── PALETA DE COLORES POR EVENTO ─────────────────────────────────────────────
+    PALETA_EVENTO = {
+        "Finalizaciones": "#FF6B6B",
+        "Pérdidas":       "#FFD166",
+        "Perdidas":       "#FFD166",
+        "Recuperos":      "#4ECDC4",
+        "Faltas":         "#A855F7",
+        "ABP":            "#118AB2",
+    }
+    
+    # ── FUNCIÓN PARA GENERAR EL GRID DE KPIs ──────────────────────────────────────
+    def grid_kpi(kpi_items):
+        """
+        Genera una fila de tarjetas de indicadores con línea verde superior,
+        etiqueta arriba y valor numérico grande en color.
+        """
+        filas_labels = []
+        filas_valores = []
+    
+        for label, val, color in kpi_items:
+            est_lbl = ParagraphStyle(
+                'KPILbl',
+                fontName='Helvetica-Bold',
+                fontSize=7,
+                textColor=colors.HexColor("#6B7280"),
+                alignment=1,
+                leading=9
+            )
+            est_val = ParagraphStyle(
+                'KPIVal',
+                fontName='Helvetica-Bold',
+                fontSize=18,
+                textColor=colors.HexColor(color),
+                alignment=1,
+                leading=20
+            )
+            filas_labels.append(Paragraph(label.upper(), est_lbl))
+            filas_valores.append(Paragraph(str(val), est_val))
+    
+        cant = len(kpi_items)
+        ancho_col = 490 / cant  # Ancho total distribuido entre las columnas
+    
+        t_kpi = Table([filas_labels, filas_valores], colWidths=[ancho_col] * cant)
+        t_kpi.setStyle(TableStyle([
+            ('BACKGROUND',   (0, 0), (-1, -1), colors.HexColor("#F9FAFB")),
+            ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING',      (0, 0), (-1, -1), 3),
+            ('TOPPADDING',   (0, 0), (-1, 0),  6),
+            ('BOTTOMPADDING',(0, 1), (-1, 1),  6),
+            ('LINEABOVE',    (0, 0), (-1, 0),  2.5, colors.HexColor("#8DC63F")), # Línea verde superior
+            ('BOX',          (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+            ('INNERGRID',    (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+        ]))
+        
+        return t_kpi
+    
     # ── GRID DE KPIs ─────────────────────────────────────────────────────────
+    
     elementos.append(Paragraph("Indicadores del partido", est_sub))
     elementos.append(linea_verde())
+
 
     kpi_items = [
         ("Finalizaciones",    str(total_fin),   PALETA_EVENTO["Finalizaciones"]),
@@ -1010,26 +1111,143 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     elementos.append(grid_kpi(kpi_items))
     elementos.append(Spacer(1, 10))  
 
-    # Posesión (si hay datos)
-    if tiene_posesion:
-        elementos.append(Spacer(1, 10))
-        elementos.append(Paragraph("Posesion de Pelota", est_sub))
-        elementos.append(linea_verde())
-        total_pp = pos_1t_p + pos_2t_p
-        total_rr = pos_1t_r + pos_2t_r
-        grand    = total_pp + total_rr
-        pos_rows = [
+    # ── POSESIÓN DE PELOTA (TABLA + GRÁFICOS COMPACTOS) ───────────────────────
+    elementos.append(Paragraph("Posesion de Pelota", est_sub))
+    elementos.append(linea_verde())
+
+    # CÁLCULO / EXTRACCIÓN DE TIEMPOS EN SEGUNDOS
+    # (Adaptado de las variables calculadas en tu reporte)
+    try:
+        t_p_1t = float(pos_1t_p) if 'pos_1t_p' in locals() else 0.0
+        t_p_2t = float(pos_2t_p) if 'pos_2t_p' in locals() else 0.0
+        t_r_1t = float(pos_1t_r) if 'pos_1t_r' in locals() else 0.0
+        t_r_2t = float(pos_2t_r) if 'pos_2t_r' in locals() else 0.0
+
+        tot_p = t_p_1t + t_p_2t
+        tot_r = t_r_1t + t_r_2t
+        tot_general = tot_p + tot_r
+
+        pct_p = (tot_p / tot_general * 100) if tot_general > 0 else 0
+        pct_r = (tot_r / tot_general * 100) if tot_general > 0 else 0
+
+        def fmt_min(seg):
+            m, s = divmod(int(seg), 60)
+            return f"{m:02d}:{s:02d}"
+
+        # 1. TABLA DE POSESIÓN
+        data_pos = [
             ["", "1 Tiempo", "2 Tiempo", "Total", "%"],
-            [equipo_propio,
-             formatear_tiempo(pos_1t_p), formatear_tiempo(pos_2t_p),
-             formatear_tiempo(total_pp),
-             f"{total_pp/grand*100:.1f}%" if grand > 0 else "—"],
-            [rival_sel,
-             formatear_tiempo(pos_1t_r), formatear_tiempo(pos_2t_r),
-             formatear_tiempo(total_rr),
-             f"{total_rr/grand*100:.1f}%" if grand > 0 else "—"],
+            [equipo_propio.upper(), fmt_min(t_p_1t), fmt_min(t_p_2t), fmt_min(tot_p), f"{pct_p:.1f}%"],
+            [rival_sel.upper(), fmt_min(t_r_1t), fmt_min(t_r_2t), fmt_min(tot_r), f"{pct_r:.1f}%"],
         ]
-        elementos.append(tabla_simple(pos_rows, [140, 75, 75, 75, 60]))
+
+        t_pos_tabla = tabla_simple(data_pos, [150, 80, 80, 90, 80])
+        elementos.append(t_pos_tabla)
+        elementos.append(Spacer(1, 8))
+
+        # 2. GENERACIÓN DE GRÁFICOS PLOTLY (TOTAL | 1T | 2T)
+        colores_pos = {"Propio": "#2ecc71", "Rival": "#e74c3c"}
+
+        # Gráfico 1: Barra Horizontal (Total del partido) — estilo dashboard
+        fig_bar = px.bar(
+            x=[tot_p, tot_r],
+            y=["Propio", "Rival"],
+            orientation='h',
+            color=["Propio", "Rival"],
+            color_discrete_map=colores_pos,
+            text=[f"{pct_p:.1f}%", f"{pct_r:.1f}%"]
+        )
+        fig_bar.update_traces(
+            textposition='outside',
+            textfont=dict(size=11, color="#111827", family="Helvetica"),
+            marker=dict(line=dict(width=0)),
+            cliponaxis=False,
+        )
+        fig_bar.update_layout(
+            title=dict(text="Total del partido",
+                       font=dict(size=11, color="#111827", family="Helvetica"),
+                       x=0.5, xanchor="center"),
+            showlegend=False,
+            margin=dict(t=28, b=8, l=52, r=38),
+            paper_bgcolor="white", plot_bgcolor="white",
+            height=160, width=340,
+            xaxis=dict(showticklabels=False, title=None,
+                       showgrid=False, zeroline=False, rangemode="tozero"),
+            yaxis=dict(title=None,
+                       tickfont=dict(size=11, color="#111827", family="Helvetica"))
+        )
+        img_bar = RLImage(
+            _io.BytesIO(pio.to_image(fig_bar, format="png", scale=2)),
+            width=210, height=110
+        )
+
+        # Gráfico 2: Dona 1er Tiempo
+        tot_1t = t_p_1t + t_r_1t
+        p_1t_pct = (t_p_1t / tot_1t * 100) if tot_1t > 0 else 50
+        r_1t_pct = (t_r_1t / tot_1t * 100) if tot_1t > 0 else 50
+
+        fig_1t = px.pie(
+            values=[t_p_1t, t_r_1t],
+            names=["Propio", "Rival"],
+            hole=0.35,
+            color=["Propio", "Rival"],
+            color_discrete_map=colores_pos
+        )
+        fig_1t.update_traces(
+            textinfo="percent",
+            textposition="inside",
+            insidetextorientation="horizontal",
+            textfont=dict(size=10, color="white"),
+            marker=dict(line=dict(color="white", width=1)),
+        )
+        fig_1t.update_layout(
+            title=dict(text="1er Tiempo", font=dict(size=9, color="#111827"), x=0.5),
+            showlegend=False,
+            margin=dict(t=20, b=10, l=10, r=10),
+            paper_bgcolor="white", plot_bgcolor="white",
+            height=135, width=165
+        )
+        img_1t = RLImage(_io.BytesIO(pio.to_image(fig_1t, format="png", scale=2)), width=145, height=105)
+
+        # Gráfico 3: Dona 2do Tiempo
+        tot_2t = t_p_2t + t_r_2t
+        fig_2t = px.pie(
+            values=[t_p_2t, t_r_2t],
+            names=["Propio", "Rival"],
+            hole=0.35,
+            color=["Propio", "Rival"],
+            color_discrete_map=colores_pos
+        )
+        fig_2t.update_traces(
+            textinfo="percent",
+            textposition="inside",
+            insidetextorientation="horizontal",
+            textfont=dict(size=10, color="white"),
+            marker=dict(line=dict(color="white", width=1)),
+        )
+        fig_2t.update_layout(
+            title=dict(text="2do Tiempo", font=dict(size=9, color="#111827"), x=0.5),
+            showlegend=False,
+            margin=dict(t=20, b=10, l=10, r=10),
+            paper_bgcolor="white", plot_bgcolor="white",
+            height=135, width=165
+        )
+        img_2t = RLImage(_io.BytesIO(pio.to_image(fig_2t, format="png", scale=2)), width=145, height=105)
+
+        # Contenedor de gráficos alineados horizontalmente
+        tabla_graficos_pos = Table([[img_bar, img_1t, img_2t]], colWidths=[218, 143, 143])
+        tabla_graficos_pos.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 0),
+        ]))
+
+        elementos.append(tabla_graficos_pos)
+
+    except Exception as e:
+        print(f"Nota: No se pudieron renderizar los gráficos de posesión: {e}")
+
+    elementos.append(Spacer(1, 10))
 
     # ── PÁGINA 2: DISTRIBUCIÓN DE VOLUMEN TÁCTICO ─────────────────────────────
     elementos.append(PageBreak())
@@ -1075,10 +1293,20 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
         # Gráfico de Barras Horizontal
         try:
+            PALETA_EVENTO_VOL = {
+                "Finalizaciones": "#FF6B6B",
+                "Perdidas":       "#FFD166",
+                "Recuperos":      "#4ECDC4",
+                "Faltas":         "#A855F7",
+                "ABP":            "#118AB2",
+                "Tiro Libre":     "#F4A261",
+                "Gol en Contra":  "#9CA3AF",
+            }
             fig_volumen = px.bar(
                 df_vol_resumen, y="tipo_evento", x="Total", orientation="h",
                 text="Total", color="tipo_evento",
-                color_discrete_sequence=px.colors.qualitative.Set2
+                color_discrete_map={t: PALETA_EVENTO_VOL.get(t, "#9CA3AF")
+                                    for t in df_vol_resumen["tipo_evento"]}
             )
             fig_volumen.update_traces(textposition="outside")
             fig_volumen.update_layout(
@@ -1137,7 +1365,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
                       color_zona_seq=color_zona_seq, color_barra=color_barra,
                       mapa_dorsal_nombre=mapa_dorsal_nombre)
 
-    # ── ABP: Consolidado en 1 sola página sin heatmap (no se marca posición en cancha)──────────────────────
+    # ── ABP: Consolidado en 1 sola página sin heatmap (no se marca posición en cancha) ────────
     def _abp_tipo_series(df_abp_sub):
         if "tipo_abp" in df_abp_sub.columns:
             s = df_abp_sub["tipo_abp"].replace("", pd.NA)
@@ -1148,80 +1376,156 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         return s.fillna("Sin especificar")
 
     def bloque_abp(df_abp_sub, nombre_tiempo):
-        """Genera una fila de 3 columnas (Tabla | Torta | Barras) para un tiempo específico."""
+        """ABP: tabla cruzada Tipo × Lado | Torta distribución | Barras agrupadas por lado."""
         if df_abp_sub is None or df_abp_sub.empty:
             return []
 
         cantidad = len(df_abp_sub)
         bloque = [
-            Paragraph(f"<b>{nombre_tiempo.upper()} ({cantidad} ABP)</b>", est_caption),
+            Paragraph(f"<b>{nombre_tiempo.upper()}  —  {cantidad} ABP</b>", est_caption),
             Spacer(1, 4)
         ]
 
         tipo_s = _abp_tipo_series(df_abp_sub)
-        tipo_c = tipo_s.value_counts().reset_index()
-        tipo_c.columns = ["Tipo de ABP", "Cant."]
-        total_abp = tipo_c["Cant."].sum()
-        tipo_c["%"] = ((tipo_c["Cant."] / total_abp) * 100).round(1).astype(str) + "%"
+        df_abp_sub = df_abp_sub.copy()
+        df_abp_sub["_tipo"] = tipo_s
 
-        lado_c = df_abp_sub["zona"].fillna("Sin especificar").value_counts().reset_index() if "zona" in df_abp_sub.columns else pd.DataFrame({"Lado": [], "Cant.": []})
-        if not lado_c.empty and "zona" in df_abp_sub.columns:
-            lado_c.columns = ["Lado", "Cant."]
-        lado_total = lado_c["Cant."].sum() if not lado_c.empty else 0
+        lado_col = df_abp_sub["zona"].fillna("Sin especificar") if "zona" in df_abp_sub.columns else pd.Series("Sin especificar", index=df_abp_sub.index)
+        df_abp_sub["_lado"] = lado_col
 
-        # Col 1: Tabla simple
-        t_simple = tabla_simple([["Tipo de ABP", "Cant.", "%"]] + tipo_c.values.tolist(), [100, 30, 30])
-        col1 = [Paragraph("Desglose:", est_caption), t_simple]
-
-        # Col 2: Torta
+        # ── Col 1: Tabla cruzada Tipo × Lado ─────────────────────────────────
         try:
-            df_tipo_plot = tipo_c[["Tipo de ABP", "Cant."]].copy()
-            df_tipo_plot.columns = ["Tipo", "Cantidad"]
-            ancho_c, alto_c = 150, 110
-            fig_t = px.pie(df_tipo_plot, values="Cantidad", names="Tipo", hole=0.4,
+            pivot = (df_abp_sub.groupby(["_tipo", "_lado"])
+                               .size().unstack(fill_value=0))
+            lados_disponibles = [l for l in ["Derecho", "Izquierdo", "Centro", "Sin especificar"]
+                                 if l in pivot.columns]
+            pivot = pivot[lados_disponibles]
+            pivot["Total"] = pivot.sum(axis=1)
+            pivot = pivot.reset_index().rename(columns={"_tipo": "Tipo de ABP"})
+
+            # Fila de totales
+            fila_total = {"Tipo de ABP": "Total"}
+            for c in pivot.columns[1:]:
+                fila_total[c] = pivot[c].sum()
+            pivot = pd.concat([pivot, pd.DataFrame([fila_total])], ignore_index=True)
+
+            col_headers = list(pivot.columns)
+            data_tabla = [col_headers] + pivot.values.tolist()
+
+            # Cálculo dinámico de anchos para no superar los 195px de la columna
+            ancho_tipo = 78
+            ancho_lado = min(46, int((195 - ancho_tipo - 32) / max(len(lados_disponibles), 1)))
+            anchos = [ancho_tipo] + [ancho_lado] * len(lados_disponibles) + [32]
+
+            t_cruzada = tabla_simple(data_tabla, anchos)
+        except Exception:
+            tipo_c = tipo_s.value_counts().reset_index()
+            tipo_c.columns = ["Tipo de ABP", "Cant."]
+            total_abp = tipo_c["Cant."].sum()
+            tipo_c["%"] = ((tipo_c["Cant."] / total_abp) * 100).round(1).astype(str) + "%"
+            t_cruzada = tabla_simple(
+                [["Tipo de ABP", "Cant.", "%"]] + tipo_c.values.tolist(),
+                [105, 32, 32]
+            )
+
+        col1 = [Paragraph("Matriz Tipo × Lado:", est_caption), t_cruzada]
+
+        # ── Col 2: Torta distribución general ────────────────────────────────
+        try:
+            tipo_counts = tipo_s.value_counts().reset_index()
+            tipo_counts.columns = ["Tipo", "Cantidad"]
+            ancho_c, alto_c = 150, 120
+            fig_t = px.pie(tipo_counts, values="Cantidad", names="Tipo", hole=0.45,
                            color_discrete_sequence=px.colors.qualitative.Pastel2)
-            fig_t.update_traces(textinfo="percent", textposition="inside", textfont=dict(size=7))
+            fig_t.update_traces(
+                textinfo="percent", textposition="inside",
+                textfont=dict(size=7), insidetextorientation="horizontal"
+            )
             fig_t.update_layout(
                 showlegend=True,
-                legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center", font=dict(size=7, color="#111827")),
-                margin=dict(t=5, b=25, l=5, r=5),
+                legend=dict(orientation="h", y=-0.28, x=0.5, xanchor="center",
+                            font=dict(size=7, color="#111827")),
+                margin=dict(t=6, b=30, l=6, r=6),
                 paper_bgcolor="white", plot_bgcolor="white",
                 font=dict(color="#111827", size=7),
-                width=ancho_c * 1.5, height=alto_c * 1.5
+                width=int(ancho_c * 1.6), height=int(alto_c * 1.6)
             )
-            img_t = RLImage(_io.BytesIO(pio.to_image(fig_t, format="png", scale=2)), width=ancho_c, height=alto_c)
-            col2 = [Paragraph("Gráfico tipo:", est_caption), img_t]
+            img_t = RLImage(
+                _io.BytesIO(pio.to_image(fig_t, format="png", scale=2)),
+                width=ancho_c, height=alto_c
+            )
+            col2 = [Paragraph("Distribución general:", est_caption), img_t]
         except Exception:
             col2 = [Paragraph("(Sin gráfico)", est_caption)]
 
-        # Col 3: Barras Lado
+        # ── Col 3: Barras horizontales APILADAS (Stack) Tipo × Lado ─────────────────
         try:
-            if not lado_c.empty and lado_total > 0:
-                df_lado_plot = lado_c[["Lado", "Cant."]].copy()
-                df_lado_plot.columns = ["Lado", "Cantidad"]
-                mapa_lado = {"Derecho": "#118AB2", "Izquierdo": "#F4A261", "Sin especificar": "#6B7280"}
-                ancho_b, alto_b = 130, 110
-                fig_b = px.bar(df_lado_plot, x="Lado", y="Cantidad", color="Lado",
-                               color_discrete_map=mapa_lado, text="Cantidad")
-                fig_b.update_traces(textposition="outside")
-                fig_b.update_layout(
-                    height=alto_b * 1.5, width=ancho_b * 1.5,
-                    margin=dict(t=10, b=20, l=10, r=10),
-                    showlegend=False, paper_bgcolor="white", plot_bgcolor="white",
-                    font=dict(color="#111827", size=8),
-                    xaxis_title=None, yaxis_title=None
-                )
-                img_b = RLImage(_io.BytesIO(pio.to_image(fig_b, format="png", scale=2)), width=ancho_b, height=alto_b)
-                col3 = [Paragraph("Distribución lado:", est_caption), img_b]
-            else:
-                col3 = [Paragraph("Sin datos de lado.", est_caption)]
+            df_lado_plot = df_abp_sub.groupby(["_tipo", "_lado"]).size().reset_index()
+            df_lado_plot.columns = ["Tipo", "Lado", "Cantidad"]
+            lados_order = [l for l in ["Derecho", "Izquierdo", "Centro", "Sin especificar"]
+                           if l in df_lado_plot["Lado"].unique()]
+            tipos_unicos = df_lado_plot["Tipo"].nunique()
+
+            # Mapa de colores exacto del Dashboard
+            MAPA_LADO = {
+                "Izquierdo":       "#3498db",
+                "Derecho":         "#e67e22",
+                "Centro":          "#2ecc71",
+                "Sin especificar": "#95a5a6",
+            }
+
+            # Altura adaptativa según cantidad de filas de ABP
+            alto_b  = max(95, tipos_unicos * 26)
+            ancho_b = 145
+
+            fig_b = px.bar(
+                df_lado_plot,
+                y="Tipo", x="Cantidad",
+                color="Lado",
+                barmode="stack",  # <-- Barras apiladas como en el Dashboard
+                orientation="h",
+                color_discrete_map=MAPA_LADO,
+                text="Cantidad",
+                category_orders={
+                    "Lado": lados_order,
+                    "Tipo": df_lado_plot.groupby("Tipo")["Cantidad"]
+                            .sum().sort_values(ascending=True).index.tolist()
+                }
+            )
+            fig_b.update_traces(
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(size=8, color="#ffffff"),  # Texto blanco dentro de las barras
+                marker=dict(line=dict(width=0)),
+            )
+            fig_b.update_layout(
+                height=int(alto_b * 1.8),
+                width=int(ancho_b * 1.8),
+                margin=dict(t=10, b=35, l=75, r=10),
+                showlegend=True,
+                legend=dict(
+                    title=None, orientation="h",
+                    y=-0.28, x=0.5, xanchor="center",
+                    font=dict(size=7, color="#111827")
+                ),
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(color="#111827", size=8),
+                yaxis=dict(title=None, tickfont=dict(size=8, color="#111827")),
+                xaxis=dict(title=None, showgrid=False,
+                           showticklabels=False, zeroline=False),
+            )
+            img_b = RLImage(
+                _io.BytesIO(pio.to_image(fig_b, format="png", scale=2)),
+                width=ancho_b, height=alto_b
+            )
+            col3 = [Paragraph("ABP por lado:", est_caption), img_b]
         except Exception:
             col3 = [Paragraph("(Sin gráfico)", est_caption)]
 
-        fila = Table([[col1, col2, col3]], colWidths=[170, 160, 150])
+        fila = Table([[col1, col2, col3]], colWidths=[195, 158, 152])
         fila.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("PADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN",      (0, 0), (-1, -1), "TOP"),
+            ("PADDING",     (0, 0), (-1, -1), 0),
             ("LEFTPADDING", (1, 0), (1, 0), 6),
             ("LEFTPADDING", (2, 0), (2, 0), 6),
         ]))
@@ -1229,6 +1533,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         bloque.append(Spacer(1, 10))
         return bloque
 
+    
     def pagina_abp_unica(df_abp_p, equipo_label):
         """Genera 1 sola página con Total, 1T y 2T alineados verticalmente."""
         if df_abp_p is None or df_abp_p.empty:
@@ -1239,9 +1544,17 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         elementos.append(Paragraph(f"Análisis General — Total, 1T y 2T", est_caption))
         elementos.append(linea_verde())
 
-        # Agregar bloques verticalmente
         elementos.extend(bloque_abp(df_abp_p, "TOTAL"))
+        elementos.append(Spacer(1, 16))
+        from reportlab.platypus import HRFlowable
+        elementos.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor("#E5E7EB"),
+                                    spaceAfter=14, spaceBefore=0))
         elementos.extend(bloque_abp(df_abp_p[df_abp_p["tiempo"] == "1T"], "PRIMER TIEMPO"))
+        elementos.append(Spacer(1, 16))
+        elementos.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor("#E5E7EB"),
+                                    spaceAfter=14, spaceBefore=0))
         elementos.extend(bloque_abp(df_abp_p[df_abp_p["tiempo"] == "2T"], "SEGUNDO TIEMPO"))
 
     # Llamada a la nueva página consolidada:
@@ -1308,17 +1621,15 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     else:
         elementos.append(Paragraph("Sin datos individuales para este partido.", est_caption))
 
-    # ── PIE DE PÁGINA ─────────────────────────────────────────────────────────
-    elementos.append(Spacer(1, 14))
-    elementos.append(linea_verde())
-    elementos.append(Paragraph(
-        "Generado por FutsalIQ Analyzer  |  futsaliq@gmail.com  |  2964 53-8214  |  (c) 2026",
-        est_footer
-    ))
 
-    doc.build(elementos)
-    buffer.seek(0)
-    return buffer
+# ── COMPILACIÓN FINAL DEL DOCUMENTO ──────────────────────────────────────
+    try:
+        doc.build(elementos)
+        buffer.seek(0)
+        return buffer.getvalue()  # <-- Retorna directamente los bytes del PDF
+    except Exception as e:
+        print(f"Error interno generando PDF: {e}")
+        raise e  # Muestra la falla exacta en la consola en lugar de devolver None
 
 def guardar_posesion_partido(conn, fecha, rival, equipo_propio, lugar, lado_inicio_1t,
                              pos_1t_propio, pos_1t_rival, pos_2t_propio, pos_2t_rival, competencia=""):
@@ -1864,6 +2175,43 @@ def _reescalar_coordenadas(df, ancho_origen, alto_origen):
     df["x"] = df["x"] * (CANCHA_ANCHO / ancho_origen)
     df["y"] = df["y"] * (CANCHA_ALTO / alto_origen)
     return df
+
+
+def orientar_eventos_heatmap(df_eventos, df_partidos):
+    """Devuelve eventos orientados al lado físico de ataque de cada tiempo.
+
+    Las coordenadas guardadas se normalizan durante la carga para que el ataque
+    apunte a la derecha. Para mostrar la cancha real, se rota el período que
+    ataca hacia la izquierda.
+    """
+    if df_eventos is None or df_eventos.empty:
+        return df_eventos
+
+    df_orientado = df_eventos.copy()
+    if df_partidos is None or df_partidos.empty:
+        return df_orientado
+
+    columnas_requeridas = {"fecha", "rival", "tiempo", "x", "y"}
+    if not columnas_requeridas.issubset(df_orientado.columns):
+        return df_orientado
+
+    info_partidos = df_partidos[["fecha", "rival", "lado_inicio_1t"]].copy()
+    info_partidos["_clave_partido"] = (
+        info_partidos["fecha"].astype(str) + "\x00" + info_partidos["rival"].astype(str)
+    )
+    lados_por_partido = info_partidos.drop_duplicates("_clave_partido").set_index("_clave_partido")["lado_inicio_1t"]
+    claves_eventos = df_orientado["fecha"].astype(str) + "\x00" + df_orientado["rival"].astype(str)
+    lados_inicio = claves_eventos.map(lados_por_partido).fillna("Derecha").astype(str)
+
+    rotar_1t = (df_orientado["tiempo"].astype(str) == "1T") & lados_inicio.str.contains("Izquierda", na=False)
+    rotar_2t = (df_orientado["tiempo"].astype(str) == "2T") & ~lados_inicio.str.contains("Izquierda", na=False)
+    rotar = rotar_1t | rotar_2t
+
+    df_orientado["x"] = pd.to_numeric(df_orientado["x"], errors="coerce")
+    df_orientado["y"] = pd.to_numeric(df_orientado["y"], errors="coerce")
+    df_orientado.loc[rotar, "x"] = 100.0 - df_orientado.loc[rotar, "x"]
+    df_orientado.loc[rotar, "y"] = 60.0 - df_orientado.loc[rotar, "y"]
+    return df_orientado
 
 
 def _matriz_densidad(x, y, bins_x=40, bins_y=20, pasadas_suavizado=2):
@@ -2684,7 +3032,7 @@ def render_dashboard_general(conn):
     st.divider()
 
     # =========================================================
-    # 2. TARJETAS KPI (AHORA DEBAJO DEL RESULTADO)
+    # 2. TARJETAS KPI (DEBAJO DEL RESULTADO)
     # =========================================================
     st.markdown("### 📊 Indicadores del Rendimiento")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -2705,10 +3053,15 @@ def render_dashboard_general(conn):
     if df_filtrado.empty:
         st.info("No hay eventos para los filtros seleccionados.")
     else:
+        df_filtrado_heatmap = orientar_eventos_heatmap(
+            df_filtrado, cargar_partidos_df(conn)
+        )
         col_heatmap, col_barras_tipo = st.columns([1.3, 1])
 
         with col_heatmap:
-            fig_heatmap_general = generar_heatmap_analisis(df_filtrado, titulo_mapa="Densidad de Acciones - Equipo")
+            fig_heatmap_general = generar_heatmap_analisis(
+                df_filtrado_heatmap, titulo_mapa="Densidad de Acciones - Equipo"
+            )
             st.plotly_chart(fig_heatmap_general, use_container_width=False, key="heatmap_dashboard_general_chart")
 
         with col_barras_tipo:
@@ -2864,7 +3217,7 @@ def render_dashboard_general(conn):
                 df_goles = df_finalizaciones[df_finalizaciones["resultado"].str.lower().str.contains("gol", na=False)].copy()
                 
                 if not df_goles.empty:
-                    df_plantel_ref = df_plantel_goles if 'df_plantel_goles' in locals() else (df_plantel if 'df_plantel' in locals() else None)
+                    df_plantel_ref = df_plantel_goles
 
                     df_goles["jugador_nombre"] = df_goles.apply(
                         lambda r: mapear_nombre_jugador(r.get("jugador"), r.get("equipo", "Propio"), df_plantel_ref),
@@ -3167,7 +3520,11 @@ def render_dashboard_general(conn):
                             height=240, 
                             margin=dict(t=10, b=10, l=10, r=10), 
                             showlegend=False,
-                            yaxis=dict(type="category", title="")
+                            yaxis=dict(type="category", title=""),
+                            xaxis=dict(
+                                dtick=1,   # Forzar a que el paso entre marcas sea de 1 en 1
+                                tick0=0    # Asegurar que arranque exactamente en 0
+                            )
                         )
                         fig_top3_f.update_traces(
                             textposition="inside",
@@ -3253,7 +3610,11 @@ def render_dashboard_general(conn):
                             height=240, 
                             margin=dict(t=10, b=10, l=10, r=10), 
                             showlegend=False,
-                            yaxis=dict(type="category", title="")
+                            yaxis=dict(type="category", title=""),
+                            xaxis=dict(
+                                dtick=1,   # Forzar a que el paso entre marcas sea de 1 en 1
+                                tick0=0    # Asegurar que arranque exactamente en 0
+                            )
                         )
                         fig_top3.update_traces(
                             textposition="inside",
@@ -3361,6 +3722,10 @@ def render_rendimiento_individual(conn):
     if tipo_evento_sel != "Todos":
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == tipo_evento_sel]
 
+    df_jugador_heatmap = orientar_eventos_heatmap(
+        df_jugador_filtrado, cargar_partidos_df(conn)
+    )
+
    # --- MINI FICHA DEL JUGADOR (solo si es de nuestro plantel registrado) ---
     if equipo_sel == "Propio":
         ficha = buscar_jugador_por_numero(conn, jugador_sel)
@@ -3417,7 +3782,7 @@ def render_rendimiento_individual(conn):
     with col_mapa:
         st.subheader("📍 Mapa de Calor Propio")
         txt_mapa_indiv = f"Densidad en Cancha - Jugador {jugador_sel} ({equipo_sel})"
-        fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_filtrado, titulo_mapa=txt_mapa_indiv)
+        fig_heatmap_indiv = generar_heatmap_analisis(df_jugador_heatmap, titulo_mapa=txt_mapa_indiv)
         st.plotly_chart(fig_heatmap_indiv, use_container_width=False, key="heatmap_individual_chart")
 
     with col_tabla:
