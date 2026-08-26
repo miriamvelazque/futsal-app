@@ -865,31 +865,6 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
     # ── PÁGINA 1: PORTADA ────────────────────────────────────────────────────
 
-    LOGO_BLANCO_PATH = "imagenes/Logo_RGB_Fondo Blanco_FutsalIQ.jpg"
-
-    titulo_col = [
-        Paragraph("RESUMEN DE ESTADISTICAS DE JUEGO", est_titulo),
-        Paragraph("Presentacion para el cuerpo tecnico — FutsalIQ", est_subtitulo),
-    ]
-    if os.path.exists(LOGO_BLANCO_PATH):
-        try:
-            logo_rl = RLImage(LOGO_BLANCO_PATH, width=140, height=46)
-            logo_col = [logo_rl]
-        except Exception:
-            logo_col = [Paragraph("FutsalIQ", est_titulo)]
-    else:
-        logo_col = [Paragraph("FutsalIQ", est_titulo)]
-
-    t_header = Table([[titulo_col, logo_col]], colWidths=[350, 150])
-    t_header.setStyle(TableStyle([
-        ("VALIGN",    (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN",     (1, 0), (1, 0),   "RIGHT"),
-        ("PADDING",   (0, 0), (-1, -1), 0),
-        ("LINEBELOW", (0, 0), (-1, 0),  2, COLOR_VERDE),
-    ]))
-    elementos.append(t_header)
-    elementos.append(Spacer(1, 10))
-
     # Metadata
     meta_rows = [
         [Paragraph("<b>Fecha</b>",        est_cuerpo), Paragraph(str(fecha_sel),  est_cuerpo),
@@ -910,40 +885,91 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     elementos.append(t_meta)
     elementos.append(Spacer(1, 10))
 
-    # Marcador
-    est_eq = ParagraphStyle("Eq", fontSize=10, fontName="Helvetica-Bold",
-                            textColor=COLOR_OSCURO, alignment=1, leading=12, wordWrap="CJK")
-    
-    # Agregamos leading=12 para la etiqueta del resultado
-    est_res_marc = ParagraphStyle("Res", fontSize=10, fontName="Helvetica-Bold",
-                                   textColor=colors.HexColor(color_resultado), alignment=1, leading=12)
-    
-    marc_data = [
-        [Paragraph(equipo_propio, est_eq),
-         Paragraph("vs", ParagraphStyle("vs", fontSize=9, fontName="Helvetica",
-                                        textColor=colors.HexColor("#9CA3AF"), alignment=1, leading=11)),
-         Paragraph(rival_sel, est_eq)],
-        
-        # ✅ Agregamos leading=32 a los números y leading=18 al guion para alinearlos
-        [Paragraph(str(gp), ParagraphStyle("GP", fontSize=32, fontName="Helvetica-Bold",
-                                            textColor=colors.HexColor("#2ecc71"), alignment=1, leading=32)),
-         Paragraph("-", ParagraphStyle("Gu", fontSize=18, fontName="Helvetica-Bold",
-                                       textColor=COLOR_OSCURO, alignment=1, leading=18)),
-         Paragraph(str(gr), ParagraphStyle("GR", fontSize=32, fontName="Helvetica-Bold",
-                                            textColor=colors.HexColor("#e74c3c"), alignment=1, leading=32))],
-        
-        [Paragraph("", est_eq), Paragraph(resultado_txt, est_res_marc), Paragraph("", est_eq)],
+#    Marcador final (equipo propio vs rival)
+# ── OBTENCIÓN DE GOLEADORES POR EQUIPO ────────────────────────────────────
+    def obtener_goleadores(df_goles, df_en_contra, mapa_dorsales):
+        lineas = []
+        # Goles a favor
+        if not df_goles.empty and "jugador" in df_goles.columns:
+            conteo = df_goles["jugador"].dropna().astype(str).value_counts()
+            for dors, cant in conteo.items():
+                dors_clean = str(dors).split(".")[0].strip()
+                nombre = mapa_dorsales.get(dors_clean, f"Jugador {dors_clean}")
+                lbl_cant = f" ({cant})" if cant > 1 else ""
+                lineas.append(f"⚽ {nombre}{lbl_cant}")
+
+        # Goles en contra a favor
+        if not df_en_contra.empty:
+            for _, r in df_en_contra.iterrows():
+                dors = str(r.get("jugador", "")).split(".")[0].strip()
+                nombre = mapa_dorsales.get(dors, f"Jugador {dors}") if dors else "Rival"
+                lineas.append(f"⚽ {nombre} (Gol en contra)")
+
+        return lineas
+
+    df_gm_p = df_gm[df_gm["equipo"].str.lower() == "propio"]
+    df_gec_r = df_gec[df_gec["equipo"].str.lower() == "rival"]
+    goleadores_propio = obtener_goleadores(df_gm_p, df_gec_r, mapa_dorsal_nombre)
+
+    df_gm_r = df_gm[df_gm["equipo"].str.lower() == "rival"]
+    df_gec_p = df_gec[df_gec["equipo"].str.lower() == "propio"]
+    goleadores_rival = obtener_goleadores(df_gm_r, df_gec_p, mapa_dorsal_nombre)
+
+    txt_gol_p = "<br/>".join(goleadores_propio) if goleadores_propio else "—"
+    txt_gol_r = "<br/>".join(goleadores_rival) if goleadores_rival else "—"
+
+    # ── ESTILOS DEL MARCADOR FINAL ───────────────────────────────────────────
+    est_mf_titulo = ParagraphStyle("MFTitulo", fontSize=8, fontName="Helvetica-Bold",
+                                   textColor=colors.HexColor("#6B7280"), alignment=1, leading=10)
+    est_eq_nombre = ParagraphStyle("EqNombre", fontSize=11, fontName="Helvetica-Bold",
+                                   textColor=COLOR_OSCURO, alignment=0, leading=13)
+    est_gol_lista = ParagraphStyle("GolLista", fontSize=8, fontName="Helvetica",
+                                   textColor=colors.HexColor("#374151"), alignment=0, leading=12)
+    est_res_marc  = ParagraphStyle("ResMarc", fontSize=9, fontName="Helvetica-Bold",
+                                   textColor=colors.HexColor(color_resultado), alignment=1, leading=11)
+
+    # Columna Izquierda (Equipo Propio)
+    col_propio = [
+        Paragraph(equipo_propio.upper(), est_eq_nombre),
+        Spacer(1, 4),
+        Paragraph(txt_gol_p, est_gol_lista)
     ]
-    
-    t_marc = Table(marc_data, colWidths=[195, 110, 195])
+
+    # Columna Derecha (Rival)
+    col_rival = [
+        Paragraph(rival_sel.upper(), est_eq_nombre),
+        Spacer(1, 4),
+        Paragraph(txt_gol_r, est_gol_lista)
+    ]
+
+    # Columna Centro (Resultado)
+    sub_marc = Table([
+        [Paragraph(str(gp), ParagraphStyle("GP", fontSize=28, fontName="Helvetica-Bold", textColor=colors.HexColor("#2ecc71"), alignment=1, leading=28)),
+         Paragraph("-", ParagraphStyle("Gu", fontSize=16, fontName="Helvetica-Bold", textColor=COLOR_OSCURO, alignment=1, leading=16)),
+         Paragraph(str(gr), ParagraphStyle("GR", fontSize=28, fontName="Helvetica-Bold", textColor=colors.HexColor("#e74c3c"), alignment=1, leading=28))]
+    ], colWidths=[35, 15, 35])
+    sub_marc.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+
+    col_centro = [
+        Paragraph("MARCADOR FINAL", est_mf_titulo),
+        Spacer(1, 4),
+        sub_marc,
+        Spacer(1, 4),
+        Paragraph(resultado_txt, est_res_marc)
+    ]
+
+    # Construcción de la Tabla Principal del Marcador
+    t_marc = Table([[col_propio, col_centro, col_rival]], colWidths=[180, 140, 180])
     t_marc.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor("#F9FAFB")),
-        ("BOX",           (0, 0), (-1, -1), 2, colors.HexColor(color_resultado)),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, 0),  8),
-        ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
-        ("PADDING",       (0, 1), (-1, 1),  2), # ✅ Reduce padding en la fila de números/guion
+        ("BOX",           (0, 0), (-1, -1), 1.5, colors.HexColor("#E5E7EB")),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("ALIGN",         (1, 0), (1, 0),   "CENTER"),
+        ("PADDING",       (0, 0), (-1, -1), 8),
+        ("LEFTPADDING",   (0, 0), (0, 0),   12),
+        ("RIGHTPADDING",  (2, 0), (2, 0),   12),
     ]))
+
     elementos.append(t_marc)
     elementos.append(Spacer(1, 10))
 
@@ -968,21 +994,21 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
     elementos.append(Spacer(1, 8))
 
-    kpi_labels = ["Finalizaciones", "Goles", "Efectividad", "Perdidas", "Recuperos", "Faltas", "ABP"]
-    kpi_vals   = [str(total_fin), str(gp), efectividad, str(perdidas_p), str(recuperos_p), str(faltas_p), str(abp_p)]
-    t_kpi = Table([kpi_labels, kpi_vals], colWidths=[72] * 7)
-    t_kpi.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), COLOR_OSCURO),
-        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
-        ("BACKGROUND", (0, 1), (-1, 1), COLOR_VERDE),
-        ("TEXTCOLOR",  (0, 1), (-1, 1), colors.white),
-        ("FONTNAME",   (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE",   (0, 0), (-1, -1), 9),
-        ("ALIGN",      (0, 0), (-1, -1), "CENTER"),
-        ("PADDING",    (0, 0), (-1, -1), 7),
-        ("BOX",        (0, 0), (-1, -1), 1, colors.HexColor("#D1D5DB")),
-    ]))
-    elementos.append(t_kpi)
+    # ── GRID DE KPIs ─────────────────────────────────────────────────────────
+    elementos.append(Paragraph("Indicadores del partido", est_sub))
+    elementos.append(linea_verde())
+
+    kpi_items = [
+        ("Finalizaciones",    str(total_fin),   PALETA_EVENTO["Finalizaciones"]),
+        ("Goles",             str(gp),          "#2ecc71"),
+        ("Efectividad",       efectividad,       "#8DC63F"),
+        ("Pérdidas",          str(perdidas_p),   PALETA_EVENTO["Perdidas"]),
+        ("Recuperos",         str(recuperos_p),  PALETA_EVENTO["Recuperos"]),
+        ("Faltas",            str(faltas_p),     PALETA_EVENTO["Faltas"]),
+        ("ABP",               str(abp_p),        PALETA_EVENTO["ABP"]),
+    ]
+    elementos.append(grid_kpi(kpi_items))
+    elementos.append(Spacer(1, 10))  
 
     # Posesión (si hay datos)
     if tiene_posesion:
