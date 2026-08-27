@@ -485,6 +485,18 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     COLOR_GRIS   = colors.HexColor("#F3F4F6")
     COLOR_TEXTO  = colors.HexColor("#111827")
 
+    # Paleta profesional para fondo blanco (menos saturada que la del dashboard oscuro)
+    PALETA_PROFESIONAL = [
+        "#4472C4",  # azul corporativo
+        "#ED7D31",  # naranja suave
+        "#A9D18E",  # verde claro
+        "#FF9999",  # rojo suave
+        "#9DC3E6",  # celeste
+        "#C9C9C9",  # gris neutro
+        "#FFD966",  # amarillo suave
+        "#B4A7D6",  # violeta claro
+    ]
+
     estilos = getSampleStyleSheet()
 
     est_titulo = ParagraphStyle("Titulo", parent=estilos["Normal"],
@@ -593,7 +605,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         if mapa_colores:
             fig = px.pie(counts, color="Valor", color_discrete_map=mapa_colores, **kwargs)
         else:
-            fig = px.pie(counts, color_discrete_sequence=color_seq or px.colors.qualitative.Set2, **kwargs)
+            fig = px.pie(counts, color_discrete_sequence=color_seq or PALETA_PROFESIONAL, **kwargs)
         fig.update_traces(textinfo="percent+label", textposition="inside",
                           textfont=dict(size=8))
         fig.update_layout(
@@ -613,67 +625,82 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
             return None
 
     def barras_top3_imagen(df_sub, col, color_barra="#F6E05E",
-                           ancho_pts=380, alto_pts=120, mapa_dorsal_nombre=None):
-        """Gráfico de barras horizontales Top-3 jugadores con etiquetas DENTRO de la barra.
-        - Si mapa_dorsal_nombre es un dict {dorsal_str: 'Apellido Nombre'},
-          muestra el nombre completo como etiqueta encima de cada barra (textposition='outside')
-          y el eje Y queda limpio (solo números / vacío) para no encimar texto.
-        - Si no hay mapa, muestra el dorsal en el eje Y como siempre.
-        Devuelve imagen RL o None."""
+                           ancho_pts=504, alto_pts=115, mapa_dorsal_nombre=None):
+        """Top-3: nombre DENTRO de la barra, cantidad FUERA — sin add_annotation."""
         if df_sub is None or df_sub.empty or col not in df_sub.columns:
             return None
+
         top = (df_sub[col].replace("", pd.NA).dropna()
                .value_counts().head(3).reset_index())
         top.columns = ["Jugador", "Cantidad"]
         if top.empty:
             return None
 
-        con_nombres = bool(mapa_dorsal_nombre)
+        top_s = top.sort_values("Cantidad", ascending=True).copy()
+        max_val = top_s["Cantidad"].max()
 
-        if con_nombres:
-            # Resolvemos el nombre para la etiqueta de texto sobre la barra
-            top["NombreLabel"] = top["Jugador"].apply(
+        # Eje Y: dorsal limpio como string
+        top_s["EjeY"] = top_s["Jugador"].apply(
+            lambda d: str(int(float(d))) if str(d).replace(".", "", 1).isdigit() else str(d)
+        )
+
+        # Nombre para ir DENTRO de la barra
+        if mapa_dorsal_nombre:
+            top_s["Nombre"] = top_s["Jugador"].apply(
                 lambda d: mapa_dorsal_nombre.get(str(d), f"#{d}")
             )
-            top_s = top.sort_values("Cantidad", ascending=True)
-            # La barra muestra "Nombre (N)" como etiqueta encima; eje Y con dorsal corto
-            top_s["TextoBarra"] = top_s.apply(
-                lambda r: f"{r['NombreLabel']} ({int(r['Cantidad'])})", axis=1
-            )
-            fig = px.bar(top_s, x="Cantidad", y="Jugador", orientation="h",
-                         text="TextoBarra", color_discrete_sequence=[color_barra])
-            fig.update_traces(
-                textposition="inside",          # ⭐ Texto DENTRO de la barra
-                insidetextanchor="start",        # ⭐ Alineado al inicio del texto
-                textfont=dict(size=9, color="#0F172A"), # Color oscuro para buen contraste
-            )
-            fig.update_layout(
-                height=150, width=500,
-                margin=dict(t=10, b=10, l=30, r=20), # Margen derecho reducido
-                showlegend=False,
-                paper_bgcolor="white", plot_bgcolor="white",
-                font=dict(color="#111827", size=9),
-                yaxis=dict(type="category", tickfont=dict(size=9, color="#1E293B")),
-                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-            )
         else:
-            top_s = top.sort_values("Cantidad", ascending=True)
-            fig = px.bar(top_s, x="Cantidad", y="Jugador", orientation="h",
-                         text="Cantidad", color_discrete_sequence=[color_barra])
-            fig.update_traces(
-                textposition="inside",
-                insidetextanchor="start",
-               textfont=dict(size=9, color="#0F172A")
-            )
-            fig.update_layout(
-                height=140, width=450,
-                margin=dict(t=10, b=10, l=30, r=20),
-                showlegend=False,
-                paper_bgcolor="white", plot_bgcolor="white",
-                font=dict(color="#111827", size=9),
-                yaxis=dict(type="category"),
-                xaxis=dict(showgrid=False),
-            )
+            top_s["Nombre"] = top_s["EjeY"]
+
+        fig = go.Figure()
+
+        # Trace 1: barras con nombre dentro
+        fig.add_trace(go.Bar(
+            x=top_s["Cantidad"],
+            y=top_s["EjeY"],
+            orientation="h",
+            text=top_s["Nombre"],
+            textposition="inside",
+            insidetextanchor="start",
+            textfont=dict(size=10, color="#0F172A"),
+            marker=dict(color=color_barra, line=dict(width=0)),
+            showlegend=False,
+        ))
+
+        # Trace 2: puntos invisibles con cantidad como texto outside
+        fig.add_trace(go.Bar(
+            x=[max_val * 0.01] * len(top_s),  # barra casi invisible
+            y=top_s["EjeY"],
+            orientation="h",
+            base=top_s["Cantidad"],            # arranca donde termina la barra real
+            text=top_s["Cantidad"].astype(int).astype(str),
+            textposition="outside",
+            textfont=dict(size=11, color="#1E293B"),
+            marker=dict(color="rgba(0,0,0,0)", line=dict(width=0)),
+            showlegend=False,
+        ))
+
+        fig.update_layout(
+            barmode="overlay",
+            height=155, width=650,
+            margin=dict(t=8, b=8, l=32, r=50),
+            showlegend=False,
+            paper_bgcolor="white", plot_bgcolor="white",
+            font=dict(color="#111827", size=10),
+            yaxis=dict(
+                type="category",
+                tickfont=dict(size=10, color="#1E293B"),
+                title=None,
+            ),
+            xaxis=dict(
+                showgrid=False,
+                showticklabels=False,
+                zeroline=False,
+                range=[0, max_val * 1.32],
+                title=None,
+            ),
+        )
+
         try:
             img_bytes = pio.to_image(fig, format="png", scale=2)
             return RLImage(_io.BytesIO(img_bytes), width=ancho_pts, height=alto_pts)
@@ -820,7 +847,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
         # 2. Columna derecha: Torta de zona
         img_torta = torta_imagen(df_sub, "zona",
-                                 color_seq=color_zona_seq or px.colors.qualitative.Set2,
+                                 color_seq=color_zona_seq or PALETA_PROFESIONAL,
                                  ancho_pts=200, alto_pts=190)
         col2 = ([Paragraph("Distribucion por zona:", est_caption), img_torta]
                 if img_torta else [Paragraph("(Sin grafico)", est_caption)])
@@ -872,6 +899,8 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
     # Si en 1T atacaba hacia la Derecha, en 2T ataca hacia la Izquierda → hay que rotar 180° el 2T
     rotar_180_2t = "Izquierda" not in str(lado_inicio_1t)
+    rotar_180_1t = "Izquierda" in str(lado_inicio_1t)
+    # rotar_180_2t ya cubre el caso opuesto: True si 1T atacaba Derecha
 
     # Posesión
     try:
@@ -983,14 +1012,15 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     txt_gol_p = "<br/>".join(goleadores_propio) if goleadores_propio else "—"
     txt_gol_r = "<br/>".join(goleadores_rival) if goleadores_rival else "—"
 
-    # ── ESTILOS Y TABLA DEL MARCADOR ──────────────────────────────────────────
-    est_mf_titulo = ParagraphStyle("MFTitulo", fontSize=8, fontName="Helvetica-Bold", textColor=colors.HexColor("#6B7280"), alignment=1, leading=10)
-    est_eq_nombre = ParagraphStyle("EqNombre", fontSize=11, fontName="Helvetica-Bold", textColor=COLOR_OSCURO, alignment=0, leading=13)
-    est_gol_lista = ParagraphStyle("GolLista", fontSize=8, fontName="Helvetica", textColor=colors.HexColor("#374151"), alignment=0, leading=12)
-    est_res_marc  = ParagraphStyle("ResMarc", fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor(color_resultado), alignment=1, leading=11)
+        # ── ESTILOS Y TABLA DEL MARCADOR ──────────────────────────────────────────
+    est_mf_titulo  = ParagraphStyle("MFTitulo",  fontSize=8,  fontName="Helvetica-Bold", textColor=colors.HexColor("#6B7280"), alignment=1, leading=10)
+    est_eq_nombre  = ParagraphStyle("EqNombre",  fontSize=11, fontName="Helvetica-Bold", textColor=COLOR_OSCURO, alignment=1, leading=13)
+    est_gol_propio = ParagraphStyle("GolProp",   fontSize=8,  fontName="Helvetica", textColor=colors.HexColor("#374151"), alignment=2, leading=12)
+    est_gol_rival  = ParagraphStyle("GolRiv",    fontSize=8,  fontName="Helvetica", textColor=colors.HexColor("#374151"), alignment=0, leading=12)
+    est_res_marc   = ParagraphStyle("ResMarc",   fontSize=9,  fontName="Helvetica-Bold", textColor=colors.HexColor(color_resultado), alignment=1, leading=11)
 
-    col_propio = [Paragraph(equipo_propio.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_p, est_gol_lista)]
-    col_rival  = [Paragraph(rival_sel.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_r, est_gol_lista)]
+    col_propio = [Paragraph(equipo_propio.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_p, est_gol_propio)]
+    col_rival  = [Paragraph(rival_sel.upper(), est_eq_nombre), Spacer(1, 4), Paragraph(txt_gol_r, est_gol_rival)]
 
     sub_marc = Table([
         [Paragraph(str(gp), ParagraphStyle("GP", fontSize=28, fontName="Helvetica-Bold", textColor=colors.HexColor("#2ecc71"), alignment=1, leading=28)),
@@ -1047,7 +1077,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
     }
     
     # ── FUNCIÓN PARA GENERAR EL GRID DE KPIs ──────────────────────────────────────
-    def grid_kpi(kpi_items):
+    def grid_kpi(kpi_items, ancho_total=504):
         """
         Genera una fila de tarjetas de indicadores con línea verde superior,
         etiqueta arriba y valor numérico grande en color.
@@ -1059,10 +1089,11 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
             est_lbl = ParagraphStyle(
                 'KPILbl',
                 fontName='Helvetica-Bold',
-                fontSize=7,
+                fontSize=5.5,
                 textColor=colors.HexColor("#6B7280"),
                 alignment=1,
-                leading=9
+                leading=7,
+                wordWrap='CJK'
             )
             est_val = ParagraphStyle(
                 'KPIVal',
@@ -1070,7 +1101,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
                 fontSize=18,
                 textColor=colors.HexColor(color),
                 alignment=1,
-                leading=20
+                leading=18
             )
             filas_labels.append(Paragraph(label.upper(), est_lbl))
             filas_valores.append(Paragraph(str(val), est_val))
@@ -1084,7 +1115,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
             ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
             ('PADDING',      (0, 0), (-1, -1), 3),
-            ('TOPPADDING',   (0, 0), (-1, 0),  6),
+            ('TOPPADDING',   (0, 0), (-1, 0),  4),
             ('BOTTOMPADDING',(0, 1), (-1, 1),  6),
             ('LINEABOVE',    (0, 0), (-1, 0),  2.5, colors.HexColor("#8DC63F")), # Línea verde superior
             ('BOX',          (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
@@ -1330,10 +1361,10 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
     config_tipos = [
         # (tipo_evento, emoji, label, color_zona_seq, color_barra, es_finalizaciones)
-        ("Finalizaciones", "🎯", "FINALIZACIONES", px.colors.qualitative.Set1,   "#FF6B6B", True),
-        ("Perdidas",       "🔴", "PERDIDAS",       px.colors.qualitative.Set2,   "#FFD166", False),
-        ("Recuperos",      "🟢", "RECUPEROS",      px.colors.qualitative.Set3,   "#4ECDC4", False),
-        ("Faltas",         "🟨", "FALTAS",          px.colors.qualitative.Pastel1,"#F6E05E", False),
+        ("Finalizaciones", "🎯", "FINALIZACIONES", PALETA_PROFESIONAL, "#FF6B6B", True),
+        ("Perdidas",       "🔴", "PERDIDAS",       PALETA_PROFESIONAL, "#FFD166", False),
+        ("Recuperos",      "🟢", "RECUPEROS",      PALETA_PROFESIONAL, "#4ECDC4", False),
+        ("Faltas",         "🟨", "FALTAS",          PALETA_PROFESIONAL, "#F6E05E", False),
     ]
 
     for tipo_ev, emoji, label, color_zona_seq, color_barra, es_fin in config_tipos:
@@ -1353,7 +1384,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
 
         # PRIMER TIEMPO (sin rotación: en 1T el equipo ya ataca hacia la Derecha)
         pagina_evento(df_1t, emoji, label, f"PRIMER TIEMPO ({len(df_1t)} {label})",
-                      equipo_propio, rotar_180=False,
+                      equipo_propio, rotar_180=rotar_180_1t,
                       es_finalizaciones=es_fin,
                       color_zona_seq=color_zona_seq, color_barra=color_barra,
                       mapa_dorsal_nombre=mapa_dorsal_nombre)
@@ -1436,7 +1467,7 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
             tipo_counts.columns = ["Tipo", "Cantidad"]
             ancho_c, alto_c = 150, 120
             fig_t = px.pie(tipo_counts, values="Cantidad", names="Tipo", hole=0.45,
-                           color_discrete_sequence=px.colors.qualitative.Pastel2)
+                           color_discrete_sequence=PALETA_PROFESIONAL)
             fig_t.update_traces(
                 textinfo="percent", textposition="inside",
                 textfont=dict(size=7), insidetextorientation="horizontal"
@@ -1575,11 +1606,11 @@ def generar_pdf_partido_avanzado(conn, fecha_sel, rival_sel, _ignorado=None, lis
         df_fin_rival_2t = df_fin_rival[df_fin_rival["tiempo"] == "2T"]
         pagina_evento(df_fin_rival_1t, "🔍", f"FINALIZACIONES {rival_sel.upper()}",
                       f"PRIMER TIEMPO ({len(df_fin_rival_1t)} FINALIZACIONES)",
-                      rival_sel, rotar_180=False,
+                      rival_sel, rotar_180=rotar_180_1t,
                       es_finalizaciones=True)
         pagina_evento(df_fin_rival_2t, "🔍", f"FINALIZACIONES {rival_sel.upper()}",
                       f"SEGUNDO TIEMPO ({len(df_fin_rival_2t)} FINALIZACIONES)",
-                      rival_sel, rotar_180=True,
+                      rival_sel, rotar_180=rotar_180_2t,
                       es_finalizaciones=True)
 
     # ABP del rival — solo total (sin heatmap, mismo formato que propio)
@@ -2177,17 +2208,30 @@ def _reescalar_coordenadas(df, ancho_origen, alto_origen):
     return df
 
 
-def orientar_eventos_heatmap(df_eventos, df_partidos):
-    """Devuelve eventos orientados al lado físico de ataque de cada tiempo.
+def orientar_eventos_heatmap(df_eventos, df_partidos, tiempo_filtro="Todos"):
+    """
+    Orienta los eventos para el heatmap según el filtro de tiempo activo:
 
-    Las coordenadas guardadas se normalizan durante la carga para que el ataque
-    apunte a la derecha. Para mostrar la cancha real, se rota el período que
-    ataca hacia la izquierda.
+    - "Todos": los eventos ya están normalizados en DB con ataque a la derecha.
+      No se rota nada → todos los eventos aparecen del mismo lado (derecha).
+    - "1T": muestra el lado real de ataque del 1T.
+      Si el equipo atacó hacia la Izquierda en 1T → rota 180°.
+      Si atacó hacia la Derecha → no rota.
+    - "2T": muestra el lado real de ataque del 2T (siempre opuesto al 1T).
+      Si el equipo atacó hacia la Derecha en 1T → en 2T ataca Izquierda → rota 180°.
+      Si atacó hacia la Izquierda en 1T → en 2T ataca Derecha → no rota.
     """
     if df_eventos is None or df_eventos.empty:
         return df_eventos
 
     df_orientado = df_eventos.copy()
+    df_orientado["x"] = pd.to_numeric(df_orientado["x"], errors="coerce")
+    df_orientado["y"] = pd.to_numeric(df_orientado["y"], errors="coerce")
+
+    # "Todos": sin rotación, ya normalizados en DB
+    if tiempo_filtro == "Todos":
+        return df_orientado
+
     if df_partidos is None or df_partidos.empty:
         return df_orientado
 
@@ -2195,22 +2239,30 @@ def orientar_eventos_heatmap(df_eventos, df_partidos):
     if not columnas_requeridas.issubset(df_orientado.columns):
         return df_orientado
 
+    # Construir mapa partido → lado_inicio_1t
     info_partidos = df_partidos[["fecha", "rival", "lado_inicio_1t"]].copy()
-    info_partidos["_clave_partido"] = (
+    info_partidos["_clave"] = (
         info_partidos["fecha"].astype(str) + "\x00" + info_partidos["rival"].astype(str)
     )
-    lados_por_partido = info_partidos.drop_duplicates("_clave_partido").set_index("_clave_partido")["lado_inicio_1t"]
-    claves_eventos = df_orientado["fecha"].astype(str) + "\x00" + df_orientado["rival"].astype(str)
-    lados_inicio = claves_eventos.map(lados_por_partido).fillna("Derecha").astype(str)
+    lados_por_partido = (info_partidos.drop_duplicates("_clave")
+                                      .set_index("_clave")["lado_inicio_1t"])
 
-    rotar_1t = (df_orientado["tiempo"].astype(str) == "1T") & lados_inicio.str.contains("Izquierda", na=False)
-    rotar_2t = (df_orientado["tiempo"].astype(str) == "2T") & ~lados_inicio.str.contains("Izquierda", na=False)
-    rotar = rotar_1t | rotar_2t
+    claves = df_orientado["fecha"].astype(str) + "\x00" + df_orientado["rival"].astype(str)
+    lados_inicio = claves.map(lados_por_partido).fillna("Derecha").astype(str)
 
-    df_orientado["x"] = pd.to_numeric(df_orientado["x"], errors="coerce")
-    df_orientado["y"] = pd.to_numeric(df_orientado["y"], errors="coerce")
+    ataca_izquierda_1t = lados_inicio.str.contains("Izquierda", na=False)
+
+    if tiempo_filtro == "1T":
+        # Rotar solo los que en 1T atacaban hacia la Izquierda
+        rotar = ataca_izquierda_1t
+    elif tiempo_filtro == "2T":
+        # En 2T el lado es el opuesto: rotar los que en 1T atacaban hacia la Derecha
+        rotar = ~ataca_izquierda_1t
+    else:
+        return df_orientado
+
     df_orientado.loc[rotar, "x"] = 100.0 - df_orientado.loc[rotar, "x"]
-    df_orientado.loc[rotar, "y"] = 60.0 - df_orientado.loc[rotar, "y"]
+    df_orientado.loc[rotar, "y"] = 60.0  - df_orientado.loc[rotar, "y"]
     return df_orientado
 
 
@@ -3039,7 +3091,7 @@ def render_dashboard_general(conn):
     render_kpi_card(col1, "Acciones Filtradas", len(df_filtrado), color_acento="#4158f6")
 
     tiros_efectivos = len(df_filtrado[(df_filtrado["tipo_evento"] == "Finalizaciones") & (df_filtrado["resultado"].isin(["Gol", "Atajado", "Desviado", "Bloqueado"]))])
-    render_kpi_card(col2, "Cantidad de finalizaciones", tiros_efectivos, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
+    render_kpi_card(col2, "Finalizaciones", tiros_efectivos, color_acento=COLORES_TIPO_EVENTO["Finalizaciones"])
 
     render_kpi_card(col3, "Pelotas Perdidas", len(df_filtrado[df_filtrado["tipo_evento"] == "Perdidas"]), color_acento=COLORES_TIPO_EVENTO["Perdidas"])
     render_kpi_card(col4, "Recuperaciones", len(df_filtrado[df_filtrado["tipo_evento"] == "Recuperos"]), color_acento=COLORES_TIPO_EVENTO["Recuperos"])
@@ -3054,7 +3106,8 @@ def render_dashboard_general(conn):
         st.info("No hay eventos para los filtros seleccionados.")
     else:
         df_filtrado_heatmap = orientar_eventos_heatmap(
-            df_filtrado, cargar_partidos_df(conn)
+            df_filtrado, cargar_partidos_df(conn),
+            tiempo_filtro=tiempo_sel
         )
         col_heatmap, col_barras_tipo = st.columns([1.3, 1])
 
@@ -3723,7 +3776,8 @@ def render_rendimiento_individual(conn):
         df_jugador_filtrado = df_jugador_filtrado[df_jugador_filtrado["tipo_evento"] == tipo_evento_sel]
 
     df_jugador_heatmap = orientar_eventos_heatmap(
-        df_jugador_filtrado, cargar_partidos_df(conn)
+        df_jugador_filtrado, cargar_partidos_df(conn),
+        tiempo_filtro=tiempo_sel
     )
 
    # --- MINI FICHA DEL JUGADOR (solo si es de nuestro plantel registrado) ---
